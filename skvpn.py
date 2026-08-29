@@ -1,7 +1,8 @@
+#!/usr/bin/env python3
 """Manage sing-box profiles as systemd template instances.
 
 A profile is one file in /etc/sing-box/profiles holding a single outbound tagged `proxy`; the
-shared base comes from Nix. Switching is `systemctl start sing-box@<name>`.
+shared base comes from the NixOS module. Switching is `systemctl start sing-box@<name>`.
 """
 
 import base64
@@ -65,6 +66,16 @@ def forget(name):
         print(f"     {name} was the boot choice, boot now starts nothing")
 
 
+def disown(name):
+    """Drop a deleted profile from the manifest — a later `add` under the same name is the
+    user's, and a manifest still claiming it would let the next sync overwrite it."""
+    if not MANIFEST.exists():
+        return
+    names = MANIFEST.read_text().split()
+    if name in names:
+        MANIFEST.write_text("\n".join(n for n in names if n != name) + "\n")
+
+
 def systemctl(*args):
     probe = subprocess.run(
         ["systemctl", *args], capture_output=True, text=True, check=False
@@ -91,6 +102,24 @@ def running():
 # --- URI → sing-box outbound ------------------------------------------------
 
 
+def parse_transport(q):
+    """The stream transport of a TCP-based scheme, None for plain TCP, ValueError for one
+    sing-box cannot speak — a profile written without it would only fail at runtime."""
+    network = q.get("type", "tcp")
+    if network == "ws":
+        transport = {"type": "ws", "path": q.get("path", "/")}
+        if q.get("host"):
+            transport["headers"] = {"Host": q["host"]}
+        return transport
+    if network == "grpc":
+        return {"type": "grpc", "service_name": q.get("serviceName", "")}
+    if network == "httpupgrade":
+        return {"type": "httpupgrade", "path": q.get("path", "/")}
+    if network in ("tcp", "raw"):
+        return None
+    raise ValueError(f"transport {network!r} has no sing-box equivalent")
+
+
 def parse_vless(url, q):
     node = {
         "type": "vless",
@@ -113,17 +142,9 @@ def parse_vless(url, q):
             tls["alpn"] = q["alpn"].split(",")
         node["tls"] = tls
 
-    network = q.get("type", "tcp")
-    if network == "ws":
-        node["transport"] = {"type": "ws", "path": q.get("path", "/")}
-        if q.get("host"):
-            node["transport"]["headers"] = {"Host": q["host"]}
-    elif network == "grpc":
-        node["transport"] = {"type": "grpc", "service_name": q.get("serviceName", "")}
-    elif network == "httpupgrade":
-        node["transport"] = {"type": "httpupgrade", "path": q.get("path", "/")}
-    elif network not in ("tcp", "raw"):
-        raise ValueError(f"transport {network!r} has no sing-box equivalent")
+    transport = parse_transport(q)
+    if transport:
+        node["transport"] = transport
 
     return node
 
@@ -153,6 +174,9 @@ def parse_trojan(url, q):
     }
     if q.get("alpn"):
         node["tls"]["alpn"] = q["alpn"].split(",")
+    transport = parse_transport(q)
+    if transport:
+        node["transport"] = transport
     return node
 
 
@@ -170,18 +194,30 @@ def uri_to_profile(uri):
     parser = PARSERS.get(url.scheme)
     if parser is None:
         raise ValueError(f"scheme {url.scheme!r} is not supported by sing-box")
+    # Also what guarantees a non-empty name below: the fragment falls back to the host
+    if not url.hostname:
+        raise ValueError("the link names no server")
     node = parser(url, {k: v[0] for k, v in parse_qs(url.query).items()})
     node["tag"] = "proxy"
     name = unquote(url.fragment) or url.hostname
     return name, {"outbounds": [node]}
 
 
+def write_private(path, text, mode):
+    """Create with the mode already tight: write_text-then-chmod leaves a window where the
+    file sits world-readable with the secret in it, and the directory lists for everyone."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    # An existing file keeps its old mode on open, so tighten that too
+    os.fchmod(fd, mode)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+
+
 def write_profile(name, config):
     PROFILES.mkdir(parents=True, exist_ok=True)
     path = profile_path(name)
-    path.write_text(json.dumps(config, indent=2) + "\n")
     # The unit runs as the sing-box user, and these carry node credentials
-    path.chmod(0o640)
+    write_private(path, json.dumps(config, indent=2) + "\n", 0o640)
     return path
 
 
@@ -198,7 +234,7 @@ def fetch(url):
         return raw
 
 
-def sync(if_stale=False):
+def sync(if_stale=False, fatal=True):
     if not SUB_URL.exists():
         # The timer runs this before any subscription is stored; that is not a failure
         if if_stale:
@@ -213,25 +249,48 @@ def sync(if_stale=False):
     except (urllib.error.URLError, OSError) as exc:
         active = running()
         hint = f" — {active} is up, so the fetch went through it" if active else ""
-        die(f"subscription unreachable: {exc}{hint}")
+        message = f"subscription unreachable: {exc}{hint}"
+        if fatal:
+            die(message)
+        # Inside `up` a dead fetch must not block the switch: switching away from a dead
+        # node is exactly when the fetch has nothing to travel through
+        print(f"  ~  {message}; profiles left as they are")
+        return
+
+    # The manifest is what tells subscription profiles apart from ones added by hand: a
+    # hand-added name is neither overwritten nor pruned, or a hostile subscription entry
+    # could silently swap the node behind a name the user trusts
+    previous = set(MANIFEST.read_text().split()) if MANIFEST.exists() else set()
 
     seen = []
+    ignored = []
     for uri in (line for line in body.splitlines() if "://" in line):
         try:
             name, config = uri_to_profile(uri)
         except ValueError as exc:
             print(f"  skip  {exc}")
             continue
+        stem = slug(name)
+        if stem not in previous and profile_path(stem).exists():
+            ignored.append(stem)
+            print(f"  !  {stem} was added by hand, the subscription entry is ignored")
+            continue
         path = write_profile(name, config)
         seen.append(path.stem)
         print(f"  +  {path.stem}")
 
-    if not seen:
-        die("subscription carried nothing sing-box can speak")
+    # Ignored entries still count as carried: a subscription whose every node the user has
+    # added by hand is not an error, and dying here would leave no manifest to ever change
+    # that — every later sync would ignore everything again, red forever
+    if not seen and not ignored:
+        message = "subscription carried nothing sing-box can speak"
+        if fatal:
+            die(message)
+        print(f"  ~  {message}; profiles left as they are")
+        return
 
-    # Drop what this subscription used to carry and no longer does; the manifest is what tells
-    # those apart from profiles added by hand, which are never touched
-    previous = set(MANIFEST.read_text().split()) if MANIFEST.exists() else set()
+    # Drop what this subscription used to carry and no longer does
+    active = running()
     spared = []
     for gone in sorted(previous - set(seen)):
         path = profile_path(gone)
@@ -239,7 +298,7 @@ def sync(if_stale=False):
             continue
         # Kept in the manifest as well as on disk, or the next sync would no longer know it
         # came from here and the orphan would outlive every cleanup
-        if running() == gone:
+        if active == gone:
             spared.append(gone)
             print(f"  ~  {gone} is up, left in place")
             continue
@@ -248,8 +307,10 @@ def sync(if_stale=False):
         forget(gone)
     MANIFEST.write_text("\n".join(seen + spared) + "\n")
 
+    # Only the mtime is ever read; the URL is a bearer secret and lives 0600 in SUB_URL.
+    # Written empty rather than touched, so a stamp that carried the URL heals itself
     STAMP.parent.mkdir(parents=True, exist_ok=True)
-    STAMP.write_text(url + "\n")
+    STAMP.write_text("")
 
 
 # --- commands ---------------------------------------------------------------
@@ -261,8 +322,7 @@ def cmd_sub(args):
         if len(args) != 2:
             die("usage: skvpn sub set <url>")
         CONF.mkdir(parents=True, exist_ok=True)
-        SUB_URL.write_text(args[1] + "\n")
-        SUB_URL.chmod(0o600)
+        write_private(SUB_URL, args[1] + "\n", 0o600)
         print("  stored")
         sync()
     elif args[:1] == ["sync"] or not args:
@@ -288,23 +348,42 @@ def cmd_rm(args):
     need_root()
     if not args:
         die("usage: skvpn rm <name>…")
+    active = running()
     for name in args:
         path = profile_path(name)
         if not path.exists():
             die(f"no such profile: {name}")
-        if running() == path.stem:
+        if active == path.stem:
             die(f"{path.stem} is up — `skvpn down` first")
         path.unlink()
         print(f"  -  {path.stem}")
         forget(path.stem)
+        disown(path.stem)
 
 
-def cmd_ls(_args):
+def cmd_ls(args):
+    # Names only, no root: the profiles directory is world-listable while the files stay
+    # 0640, and this is what shell completion calls on every TAB
+    if args == ["--names"]:
+        for name in profile_names():
+            print(name)
+        return
+    if args:
+        die("usage: skvpn ls [--names]")
     active = running()
     if not os.access(PROFILES, os.R_OK):
         die(f"cannot read {PROFILES} — try `sudo skvpn ls`")
     for name in profile_names():
-        node = json.loads(profile_path(name).read_text())["outbounds"][0]
+        # The directory lists for everyone, the contents carry node credentials and do not
+        try:
+            node = json.loads(profile_path(name).read_text())["outbounds"][0]
+        except PermissionError:
+            die("profile contents are root-only — try `sudo skvpn ls`")
+        except (ValueError, LookupError, TypeError):
+            # A crash mid-write can leave a truncated file, a hand edit a wrong shape;
+            # name it instead of a traceback
+            print(f"   {name:<24} broken profile")
+            continue
         mark = "*" if name == active else " "
         print(f" {mark} {name:<24} {node['type']:<10} {node.get('server', '-')}")
 
@@ -316,7 +395,11 @@ def cmd_up(args):
     name = slug(args[0])
     if not profile_path(name).exists():
         die(f"no such profile: {name}")
-    sync(if_stale=True)
+    sync(if_stale=True, fatal=False)
+    # The sync may just have pruned the very profile asked for; starting it anyway would
+    # fail at the unit and still be remembered as the boot choice
+    if not profile_path(name).exists():
+        die(f"the subscription no longer carries {name}")
     cmd_down([])
     systemctl("start", UNIT.format(name))
     # Remembered only once it is up, so a broken profile is not replayed on every boot
