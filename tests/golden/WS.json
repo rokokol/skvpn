@@ -1,0 +1,26 @@
+{
+  "outbounds": [
+    {
+      "type": "vless",
+      "server": "cdn.example.com",
+      "server_port": 443,
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "tls": {
+        "enabled": true,
+        "server_name": "cdn.example.com",
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ]
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ws",
+        "headers": {
+          "Host": "cdn.example.com"
+        }
+      },
+      "tag": "proxy"
+    }
+  ]
+}

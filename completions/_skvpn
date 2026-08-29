@@ -1,0 +1,50 @@
+#compdef skvpn
+# zsh completion for skvpn. The command list is spelled here by hand; tests/run.sh checks it
+# against skvpn.COMMANDS, so a command added there fails the suite until it lands here
+
+_skvpn_profiles() {
+  # Live names, not a cached list: the directory is world-listable on purpose
+  local -a names
+  names=(${(f)"$(skvpn ls --names 2>/dev/null)"})
+  _describe -t profiles 'profile' names
+}
+
+_skvpn() {
+  local -a commands=(
+    'sub:store or refresh the subscription'
+    'add:add profiles from share links'
+    'rm:delete profiles'
+    'ls:list profiles'
+    'up:start a profile'
+    'down:stop the active profile'
+    'restore:start the last active profile'
+    'status:show the active profile and sync age'
+  )
+
+  if ((CURRENT == 2)); then
+    _describe -t commands 'skvpn command' commands
+    return
+  fi
+
+  case "$words[2]" in
+    up | rm)
+      _skvpn_profiles
+      ;;
+    sub)
+      if ((CURRENT == 3)); then
+        local -a subcommands=(
+          'set:store a subscription url and sync it'
+          'sync:refresh profiles from the stored subscription'
+        )
+        _describe -t commands 'sub command' subcommands
+      fi
+      ;;
+    ls)
+      if ((CURRENT == 3)); then
+        compadd -- --names
+      fi
+      ;;
+  esac
+}
+
+_skvpn "$@"

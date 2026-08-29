@@ -1,0 +1,20 @@
+{
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "server": "node.example.com",
+      "server_port": 443,
+      "password": "secret",
+      "tls": {
+        "enabled": true,
+        "server_name": "node.example.com",
+        "insecure": true
+      },
+      "obfs": {
+        "type": "salamander",
+        "password": "obfspass"
+      },
+      "tag": "proxy"
+    }
+  ]
+}

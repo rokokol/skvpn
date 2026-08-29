@@ -1,0 +1,18 @@
+{
+  "outbounds": [
+    {
+      "type": "trojan",
+      "server": "node.example.com",
+      "server_port": 443,
+      "password": "secret",
+      "tls": {
+        "enabled": true,
+        "server_name": "node.example.com",
+        "alpn": [
+          "h2"
+        ]
+      },
+      "tag": "proxy"
+    }
+  ]
+}

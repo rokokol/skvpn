@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Answers list-units from FAKE_ACTIVE and records every call for the suite to assert on
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${SYSTEMCTL_LOG:?}"
+
+if [[ "${1:-}" == list-units && -n "${FAKE_ACTIVE:-}" ]]; then
+  printf 'sing-box@%s.service loaded active running\n' "$FAKE_ACTIVE"
+fi
