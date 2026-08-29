@@ -7,7 +7,8 @@ name: update-lock
 # lands the bump only if they pass
 on:
   schedule:
-    - cron: "0 5 * * 1"
+    # The family's second wave: 06:00, an hour before huix takes the tree
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 # Two runs would push the same branch from different bases
