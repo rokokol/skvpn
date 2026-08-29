@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-A sing-box VPN client for NixOS in two halves. `skvpn.py` is the CLI: it turns share links or a subscription into profile files — one outbound tagged `proxy` each — under `/etc/sing-box/profiles`, and switches them as `sing-box@<name>` systemd template instances. `nix/module.nix` is the mechanism around it: the template unit, boot restore, subscription sync timer, the `sing-box` user, and a generic base config (TUN, DNS, routing skeleton) rendered from options into `/etc/sing-box/base.d`. Policy — which zones and rule-sets bypass the tunnel — is the consumer's options, never a default here
+A sing-box VPN client for systemd Linux. `skvpn.py` is the CLI: it turns share links or a subscription into profile files — one outbound tagged `proxy` each — under `/etc/sing-box/profiles`, and switches them as `sing-box@<name>` systemd template instances. `nix/module.nix` declares the whole mechanism on NixOS: the template unit, boot restore, subscription sync timer, the `sing-box` user, and a generic base config (TUN, DNS, routing skeleton) rendered from options into `/etc/sing-box/base.d`. `install.sh` and `non-nix/render-base.py` install the equivalent mechanism elsewhere, with installer flags matching the NixOS policy options
 
 The seam in `rokokol/huix` is `nixos/services/system/skvpn.nix`: enable plus the routing policy (RU zones, geosite/geoip rule-sets from its own flake inputs)
 
@@ -24,7 +24,8 @@ skvpn.py             the CLI
 completions/         skvpn.bash and _skvpn, spelled by hand
 nix/                 package.nix, module.nix, module-test.nix, nixos-eval.nix
 tests/               run.sh, the systemctl stub, golden parser outputs
-install.sh           for systems without Nix
+install.sh           installer and option parser for systems without Nix
+non-nix/             renderer for the non-Nix base config
 ```
 
 ## Things that will bite

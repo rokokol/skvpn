@@ -53,7 +53,7 @@ Everything that writes or talks to systemd needs root; `ls --names` and `status`
 ## How it is put together
 
 ```
-/etc/sing-box/base.d/00-base.json   TUN, DNS, routing — rendered by the NixOS module
+/etc/sing-box/base.d/00-base.json   TUN, DNS, routing — rendered by NixOS or the installer
 /etc/sing-box/base.d/50-extra.json  extraSettings, when set
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the profile to bring back on boot
@@ -118,13 +118,26 @@ inputs.skvpn = {
 };
 ```
 
-then import `inputs.skvpn.nixosModules.default` and enable as above. Without the module, `packages.default` and `overlays.default` carry the bare CLI. Without Nix at all:
+then import `inputs.skvpn.nixosModules.default` and enable as above. Without the module, `packages.default` and `overlays.default` carry the bare CLI. On Arch Linux without Nix:
 
 ```sh
-./install.sh            # PREFIX=/usr/local; PREFIX/DESTDIR and --prefix/--destdir supported
+sudo pacman -S sing-box
+sudo ./install.sh                    # PREFIX=/usr/local; --prefix/--destdir supported
+sudo ./install.sh --fix-discord-voice # loosen IPv4 reverse-path filtering for tunnelled UDP
+sudo ./install.sh --no-fix-discord-voice # remove the fix and restore the previous value
+sudo ./install.sh --uninstall        # remove the CLI, completions and installed settings
 ```
 
-`install.sh` lays out the CLI and completions only — the units and the base config are the module's half
+The Arch package supplies the binary, service user and template unit. The installer adds the base config, an `ExecStart` drop-in for skvpn's split base/profile layout, boot restore and the daily subscription timer. `--fix-discord-voice` writes `/etc/sysctl.d/90-skvpn.conf` with loose IPv4 reverse-path filtering. A live installation remembers the value it replaced, so both `--no-fix-discord-voice` and `--uninstall` restore it; repeating any of these commands is safe. `--uninstall` leaves profiles, the subscription and active-profile state intact. With `--destdir` files are only staged
+
+The NixOS policy options have matching installer flags: `--tailscale`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+
+```sh
+sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set
+sudo ./install.sh --direct-russia
+```
+
+`./install.sh --help` is the complete command reference. Installer flags describe the desired generated configuration, so repeat the same command to reproduce it; omitted routing and service options return to their defaults. The Discord fix is preserved when omitted because removing a host firewall setting must be explicit
 
 ## Tests
 

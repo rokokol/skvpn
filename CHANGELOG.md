@@ -4,6 +4,10 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ## [Unreleased]
 
+### Added
+
+- a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice`, rollback with `--no-fix-discord-voice`, and `--uninstall`
+
 ## [1.0.0] - 2026-08-29
 
 Split out of [rokokol/huix](https://github.com/rokokol/huix), where it was a script and a service module in the NixOS configuration

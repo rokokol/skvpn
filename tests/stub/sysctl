@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${SYSCTL_STATE:?SYSCTL_STATE is required by the sysctl stub}"
+
+case "$1" in
+  -n)
+    [[ "$2" == net.ipv4.conf.all.rp_filter ]]
+    cat "$SYSCTL_STATE"
+    ;;
+  -q)
+    case "$2" in
+      -p)
+        grep -q '^net.ipv4.conf.all.rp_filter = 2$' "$3"
+        printf '2\n' >"$SYSCTL_STATE"
+        ;;
+      -w)
+        printf '%s\n' "${3##*=}" >"$SYSCTL_STATE"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 1
+    ;;
+esac

@@ -4,6 +4,10 @@ set -euo pipefail
 
 printf '%s\n' "$*" >>"${SYSTEMCTL_LOG:?}"
 
+if [[ -n "${SYSTEMCTL_FAIL:-}" && "$*" == *"$SYSTEMCTL_FAIL"* ]]; then
+  exit 1
+fi
+
 if [[ "${1:-}" == list-units && -n "${FAKE_ACTIVE:-}" ]]; then
   printf 'sing-box@%s.service loaded active running\n' "$FAKE_ACTIVE"
 fi

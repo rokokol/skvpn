@@ -39,6 +39,14 @@
         name = "skvpn.py";
         path = ./skvpn.py;
       };
+      installer = builtins.path {
+        name = "install.sh";
+        path = ./install.sh;
+      };
+      nonNixDir = builtins.path {
+        name = "skvpn-non-nix";
+        path = ./non-nix;
+      };
       completionsDir = builtins.path {
         name = "skvpn-completions";
         path = ./completions;
@@ -96,12 +104,16 @@
                   coreutils
                   diffutils
                   gnugrep
+                  jq
                   python3
+                  systemd
                 ];
               }
               ''
                 mkdir -p repo
                 cp ${script} repo/skvpn.py
+                cp ${installer} repo/install.sh
+                cp -r ${nonNixDir} repo/non-nix
                 cp -r ${completionsDir} repo/completions
                 cp -r ${testsDir} repo/tests
                 chmod -R +w repo
@@ -264,6 +276,7 @@
             pkgs.runCommand "scripts-lint"
               {
                 nativeBuildInputs = [
+                  pkgs.python3.pkgs.flake8
                   pkgs.shellcheck
                   pkgs.shfmt
                   pkgs.zsh
@@ -277,6 +290,7 @@
                 shfmt -d -i 2 -ci $files
                 # zsh is not shellcheck's language; a parse is what can be checked
                 zsh -n ${completionsDir}/_skvpn
+                flake8 --max-line-length=88 ${nonNixDir}/render-base.py
                 touch $out
               '';
         }

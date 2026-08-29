@@ -29,13 +29,11 @@ jobs:
       # pass against the installed copy
       - name: install.sh works
         run: |
-          PREFIX=$PWD/out ./install.sh
-          test -x out/bin/skvpn
-          test -f out/share/bash-completion/completions/skvpn
-          test -f out/share/zsh/site-functions/_skvpn
-          SKVPN=$PWD/out/bin/skvpn ./tests/run.sh
           DESTDIR=$PWD/stage PREFIX=/usr ./install.sh
           test -x stage/usr/bin/skvpn
+          test -f stage/usr/share/bash-completion/completions/skvpn
+          test -f stage/usr/share/zsh/site-functions/_skvpn
+          SKVPN=$PWD/stage/usr/bin/skvpn ./tests/run.sh
           ! DESTDIR=$PWD/bad PREFIX=usr ./install.sh >/dev/null 2>&1
       - run: nix fmt -- --ci
 

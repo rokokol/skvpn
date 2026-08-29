@@ -55,6 +55,7 @@ world() {
   export SYSTEMCTL_LOG="$SKVPN_ROOT/systemctl.log"
   : >"$SYSTEMCTL_LOG"
   unset FAKE_ACTIVE
+  unset SYSTEMCTL_FAIL
 }
 
 sv() { python3 "$SKVPN" "$@"; }
@@ -377,6 +378,193 @@ else
 fi
 
 echo "cli"
+
+world installer-leaves-host-policy-alone-by-default
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
+if [[ -x "$SKVPN_ROOT/stage/usr/local/bin/skvpn" &&
+  -e "$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json" &&
+  -e "$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf" &&
+  -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-restore.service" &&
+  -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
+  ! -e "$SKVPN_ROOT/stage/etc/sysctl.d/90-skvpn.conf" ]]; then
+  ok
+else
+  fail "the default install missed the CLI or invented host policy"
+fi
+
+world installer-can-fix-discord-voice
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --fix-discord-voice >/dev/null
+if [[ "$(cat "$SKVPN_ROOT/stage/etc/sysctl.d/90-skvpn.conf")" == *"net.ipv4.conf.all.rp_filter = 2"* ]]; then
+  ok
+else
+  fail "--fix-discord-voice did not install loose reverse-path filtering"
+fi
+
+world installer-renders-non-nix-options
+printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
+"$REPO/install.sh" \
+  --destdir "$SKVPN_ROOT/stage" \
+  --tailscale \
+  --direct-russia \
+  --direct-zone .by \
+  --direct-geosite geosite-ru=/rules/site.srs \
+  --direct-geoip custom-ip=/rules/ip.srs \
+  --tun-interface friend-tun \
+  --tun-address 10.42.0.1/30 \
+  --dns-server 1.1.1.1 \
+  --extra-settings "$SKVPN_ROOT/extra.json" \
+  --no-restore \
+  --sync-interval weekly \
+  --trusted-user alice >/dev/null
+base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
+if jq -e '
+	.inbounds[0].interface_name == "friend-tun" and
+	.inbounds[0].address == ["10.42.0.1/30"] and
+	(.inbounds[0].route_exclude_address | length == 2)
+' "$base" >/dev/null &&
+  jq -e '.dns.servers[1].server == "1.1.1.1"' "$base" >/dev/null &&
+  jq -e '.route.rules | any(.domain_suffix? | index(".ru"))' "$base" >/dev/null &&
+  jq -e '.route.rule_set | map(.tag) | sort == ["custom-ip", "geoip-ru", "geosite-ru"]' "$base" >/dev/null &&
+  jq -e '.route.rule_set | map(select(.tag == "geosite-ru"))[0].path == "/rules/site.srs"' "$base" >/dev/null &&
+  grep -q '^OnCalendar=weekly$' "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
+  [[ ! -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-restore.service" &&
+    -e "$SKVPN_ROOT/stage/etc/sing-box/base.d/50-extra.json" &&
+    -e "$SKVPN_ROOT/stage/etc/sudoers.d/skvpn" ]]; then
+  ok
+else
+  fail "non-Nix options did not reach their config, unit, or policy files"
+fi
+
+world installer-help-lists-every-feature
+help=$("$REPO/install.sh" --help)
+missing=""
+for option in tailscale direct-russia direct-china direct-iran direct-zone direct-geosite \
+  direct-geoip tun-interface tun-address dns-server extra-settings no-restore sync-interval \
+  trusted-user fix-discord-voice no-fix-discord-voice uninstall; do
+  [[ "$help" == *"--$option"* ]] || missing+=" $option"
+done
+if [[ -z "$missing" ]]; then
+  ok
+else
+  fail "installer help omits:$missing"
+fi
+
+world installer-rejects-non-object-extra-settings
+printf '[]\n' >"$SKVPN_ROOT/extra.json"
+if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --extra-settings "$SKVPN_ROOT/extra.json" >/dev/null 2>&1; then
+  fail "an array was accepted as sing-box extra settings"
+elif [[ ! -e "$SKVPN_ROOT/stage/usr/local/bin/skvpn" ]]; then
+  ok
+else
+  fail "invalid extra settings left a partial installation"
+fi
+
+world installer-refuses-unmanaged-config
+mkdir -p "$SKVPN_ROOT/etc/sing-box/base.d"
+printf 'mine\n' >"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+if env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null 2>&1; then
+  fail "the installer overwrote a config it did not own"
+elif [[ "$(<"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json")" == mine ]]; then
+  ok
+else
+  fail "an unmanaged config changed before the installer refused it"
+fi
+
+world discord-voice-fix-is-idempotent-and-reversible
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '1\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+install_args=(
+  --prefix "$SKVPN_ROOT/usr"
+  --fix-discord-voice
+)
+env "${installer_env[@]}" "$REPO/install.sh" "${install_args[@]}" >/dev/null
+env "${installer_env[@]}" "$REPO/install.sh" "${install_args[@]}" >/dev/null
+saved="$SKVPN_ROOT/var/lib/skvpn/install-state/rp-filter-before-discord-voice"
+env "${installer_env[@]}" \
+  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --no-fix-discord-voice >/dev/null
+if [[ "$(<"$SYSCTL_STATE")" == 1 && ! -e "$saved" &&
+! -e "$SKVPN_ROOT/etc/sysctl.d/90-skvpn.conf" ]]; then
+  ok
+else
+  fail "a repeated install lost the old rp_filter value, or disabling did not restore it"
+fi
+
+world uninstall-removes-every-installed-file
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+common_args=(
+  --prefix "$SKVPN_ROOT/usr"
+)
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --fix-discord-voice >/dev/null
+env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --uninstall >/dev/null
+env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --uninstall >/dev/null
+if [[ "$(<"$SYSCTL_STATE")" == 0 && ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+! -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
+! -e "$SKVPN_ROOT/systemd/sing-box@.service.d/skvpn.conf" &&
+! -e "$SKVPN_ROOT/systemd/skvpn-restore.service" &&
+! -e "$SKVPN_ROOT/systemd/skvpn-sync.service" &&
+! -e "$SKVPN_ROOT/systemd/skvpn-sync.timer" &&
+! -e "$SKVPN_ROOT/etc/sysctl.d/90-skvpn.conf" ]]; then
+  ok
+else
+  fail "uninstall did not restore policy and remove every file, or was not repeatable"
+fi
+
+world uninstall-keeps-files-when-stop-fails
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null
+export FAKE_ACTIVE=SE-exit
+export SYSTEMCTL_FAIL='stop sing-box@SE-exit.service'
+if env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall >/dev/null 2>&1; then
+  fail "uninstall ignored a failed active-instance stop"
+elif [[ -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+  -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
+  -e "$SKVPN_ROOT/systemd/sing-box@.service.d/skvpn.conf" ]]; then
+  ok
+else
+  fail "uninstall deleted runtime files after an active-instance stop failed"
+fi
 
 world unknown-command-fails
 if sv frobnicate >/dev/null 2>&1; then
