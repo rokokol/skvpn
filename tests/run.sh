@@ -449,6 +449,41 @@ else
   fail "installer help omits:$missing"
 fi
 
+world installer-reports-all-missing-dependencies
+printf 'ID=ubuntu\nID_LIKE=debian\n' >"$SKVPN_ROOT/os-release"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$SKVPN_ROOT/missing-sing-box"
+  "SERVICE_USER=missing-sing-box-user"
+  "OS_RELEASE=$SKVPN_ROOT/os-release"
+  "SYSTEMCTL_FAIL=cat sing-box@.service"
+)
+if out=$(env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
+  fail "installation continued with missing runtime dependencies"
+elif [[ "$out" == *"sing-box ($SKVPN_ROOT/missing-sing-box)"* &&
+  "$out" == *"sing-box@.service"* &&
+  "$out" == *"sing-box service user (missing-sing-box-user)"* &&
+  "$out" == *"official APT repository"* &&
+  "$out" == *"sing-box.sagernet.org/installation/package-manager"* &&
+  ! -e "$SKVPN_ROOT/usr/bin/skvpn" ]]; then
+  ok
+else
+  fail "dependency preflight did not aggregate failures or show the Ubuntu guidance"
+fi
+
+world installer-gives-arch-package-command
+printf 'ID=cachyos\nID_LIKE=arch\n' >"$SKVPN_ROOT/os-release"
+if out=$(OS_RELEASE="$SKVPN_ROOT/os-release" SING_BOX="$SKVPN_ROOT/missing" \
+  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
+  fail "installation continued without sing-box on CachyOS"
+elif [[ "$out" == *"sudo pacman -S --needed sing-box"* ]]; then
+  ok
+else
+  fail "the CachyOS preflight did not print the package command"
+fi
+
 world installer-rejects-non-object-extra-settings
 printf '[]\n' >"$SKVPN_ROOT/extra.json"
 if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --extra-settings "$SKVPN_ROOT/extra.json" >/dev/null 2>&1; then

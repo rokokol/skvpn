@@ -130,6 +130,8 @@ sudo ./install.sh --uninstall        # remove the CLI, completions and installed
 
 The Arch package supplies the binary, service user and template unit. The installer adds the base config, an `ExecStart` drop-in for skvpn's split base/profile layout, boot restore and the daily subscription timer. `--fix-discord-voice` writes `/etc/sysctl.d/90-skvpn.conf` with loose IPv4 reverse-path filtering. A live installation remembers the value it replaced, so both `--no-fix-discord-voice` and `--uninstall` restore it; repeating any of these commands is safe. `--uninstall` leaves profiles, the subscription and active-profile state intact. With `--destdir` files are only staged
 
+Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific installation guidance when anything is missing
+
 The NixOS policy options have matching installer flags: `--tailscale`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh

@@ -12,6 +12,7 @@ SERVICE_USER="${SERVICE_USER:-sing-box}"
 SERVICE_GROUP="${SERVICE_GROUP:-sing-box}"
 PROFILES_OWNER="${PROFILES_OWNER:-root}"
 PROFILES_MODE="${PROFILES_MODE:-2755}"
+OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
 DISCORD_VOICE_ACTION=""
 CONFIG_ARGS=()
 RESTORE=1
@@ -50,7 +51,7 @@ install.sh — install skvpn
 
 The CLI goes to \$PREFIX/bin/skvpn, completions to \$PREFIX/share, the base config to
 \$SYSCONFDIR/sing-box/base.d, and units to \$SYSTEMD_UNITDIR. python3, systemd, and
-sing-box must already be installed; on Arch Linux: pacman -S sing-box
+sing-box must already be installed; a failed preflight prints distro-specific guidance
 EOF
 }
 
@@ -159,16 +160,69 @@ sing_box_dropin="$unit_root/sing-box@.service.d/skvpn.conf"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
 profile_file="$sysconf_root/profile.d/skvpn.sh"
 
-if [[ -z "$DESTDIR" && ! -x "$SING_BOX" && $UNINSTALL == 0 ]]; then
-  if [[ -e /etc/arch-release ]]; then
-    echo "install.sh: sing-box is required; install it with: sudo pacman -S sing-box" >&2
+missing=()
+sing_box_missing=0
+for command in install mktemp python3; do
+  command -v "$command" >/dev/null || missing+=("$command")
+done
+if [[ -z "$DESTDIR" ]]; then
+  for command in id systemctl systemd-analyze; do
+    command -v "$command" >/dev/null || missing+=("$command")
+  done
+  if ((UNINSTALL)); then
+    if [[ -f "$rp_filter_state" ]]; then
+      command -v sysctl >/dev/null || missing+=("sysctl")
+    fi
   else
-    echo "install.sh: sing-box is required; set SING_BOX if it is outside /usr/bin" >&2
+    if [[ ! -x "$SING_BOX" ]]; then
+      missing+=("sing-box ($SING_BOX)")
+      sing_box_missing=1
+    fi
+    if command -v systemctl >/dev/null && ! systemctl cat sing-box@.service >/dev/null 2>&1; then
+      missing+=("sing-box@.service")
+      sing_box_missing=1
+    fi
+    if command -v id >/dev/null && ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+      missing+=("sing-box service user ($SERVICE_USER)")
+      sing_box_missing=1
+    fi
+    if [[ "$DISCORD_VOICE_ACTION" == enable ]]; then
+      command -v sysctl >/dev/null || missing+=("sysctl")
+    fi
+    if ((${#TRUSTED_USERS[@]})); then
+      command -v visudo >/dev/null || missing+=("sudo/visudo")
+    fi
   fi
-  exit 1
 fi
-if [[ -z "$DESTDIR" && $UNINSTALL == 0 ]] && ! systemctl cat sing-box@.service >/dev/null 2>&1; then
-  echo "install.sh: the sing-box package did not provide sing-box@.service" >&2
+
+if ((${#missing[@]})); then
+  printf 'install.sh: missing dependencies:\n' >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  if ((sing_box_missing)); then
+    distro=""
+    if [[ -r "$OS_RELEASE" ]]; then
+      while IFS='=' read -r key value; do
+        case "$key" in
+          ID | ID_LIKE)
+            value="${value%\"}"
+            value="${value#\"}"
+            distro+=" $value"
+            ;;
+        esac
+      done <"$OS_RELEASE"
+    fi
+    case " $distro " in
+      *" arch "*)
+        printf '\nInstall sing-box on Arch/CachyOS:\n  sudo pacman -S --needed sing-box\n' >&2
+        ;;
+      *" debian "* | *" ubuntu "*)
+        printf '\nInstall sing-box from its official APT repository, then rerun this command:\n  https://sing-box.sagernet.org/installation/package-manager/#repository-installation\n' >&2
+        ;;
+      *)
+        printf '\nOfficial sing-box packages and installation instructions:\n  https://sing-box.sagernet.org/installation/package-manager/\n' >&2
+        ;;
+    esac
+  fi
   exit 1
 fi
 
@@ -244,17 +298,9 @@ if [[ -n "$EXTRA_SETTINGS" ]]; then
 fi
 if [[ -z "$DESTDIR" ]]; then
   systemd-analyze calendar "$SYNC_INTERVAL" >/dev/null
-  id -u "$SERVICE_USER" >/dev/null 2>&1 || {
-    echo "install.sh: the sing-box package did not create its service user" >&2
-    exit 1
-  }
 fi
 previous_rp_filter=""
 if [[ "$DISCORD_VOICE_ACTION" == enable && -z "$DESTDIR" ]]; then
-  command -v sysctl >/dev/null || {
-    echo "install.sh: sysctl is required by --fix-discord-voice" >&2
-    exit 1
-  }
   if [[ ! -f "$rp_filter_state" ]]; then
     previous_rp_filter=$(sysctl -n net.ipv4.conf.all.rp_filter)
     [[ "$previous_rp_filter" =~ ^[012]$ ]] || {
@@ -281,10 +327,6 @@ if ((${#TRUSTED_USERS[@]})); then
     printf '%s ALL=(root) NOPASSWD: %s\n' "$user" "$skvpn_bin" >>"$rendered_sudoers"
   done
   if [[ -z "$DESTDIR" ]]; then
-    command -v visudo >/dev/null || {
-      echo "install.sh: sudo is required by --trusted-user" >&2
-      exit 1
-    }
     chmod 600 "$rendered_sudoers"
     visudo -cf "$rendered_sudoers" >/dev/null
   fi
