@@ -1,0 +1,52 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  # Called by update-lock.yml against its temp branch, so the lock bump is checked by this
+  # file rather than by a copy of its commands
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: cachix/install-nix-action@v31
+      - run: nix build --no-write-lock-file
+      # tests, package-smoke, module-wiring, nixos-eval, scripts-lint
+      - run: nix flake check --no-write-lock-file
+      # The CLI must stay usable without Nix: install.sh lays it out, and the suite has to
+      # pass against the installed copy
+      - name: install.sh works
+        run: |
+          PREFIX=$PWD/out ./install.sh
+          test -x out/bin/skvpn
+          test -f out/share/bash-completion/completions/skvpn
+          test -f out/share/zsh/site-functions/_skvpn
+          SKVPN=$PWD/out/bin/skvpn ./tests/run.sh
+          DESTDIR=$PWD/stage PREFIX=/usr ./install.sh
+          test -x stage/usr/bin/skvpn
+          ! DESTDIR=$PWD/bad PREFIX=usr ./install.sh >/dev/null 2>&1
+      - run: nix fmt -- --ci
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: cachix/install-nix-action@v31
+      - run: nix run nixpkgs#shellcheck -- install.sh tests/run.sh tests/stub/* completions/skvpn.bash
+      - run: nix run nixpkgs#shfmt -- -d -i 2 -ci install.sh tests/run.sh tests/stub/* completions/skvpn.bash
+      # zsh is not shellcheck's language; a parse is what can be checked
+      - run: nix run nixpkgs#zsh -- -n completions/_skvpn
