@@ -32,7 +32,6 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 - [Completions](#completions)
 - [Install](#install)
 - [Tests](#tests)
-- [License](#license)
 
 ## Commands
 
@@ -148,7 +147,3 @@ sudo ./install.sh --direct-russia
 ./tests/run.sh --update  # rewrite the golden parser outputs
 nix flake check          # the suite, the packaged CLI, module wiring, a real-nixpkgs eval, shell lint
 ```
-
-## License
-
-[MIT](LICENSE)
