@@ -44,7 +44,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
-      - run: nix run nixpkgs#shellcheck -- install.sh tests/run.sh tests/stub/* completions/skvpn.bash
-      - run: nix run nixpkgs#shfmt -- -d -i 2 -ci install.sh tests/run.sh tests/stub/* completions/skvpn.bash
+      - run: nix develop --no-write-lock-file --command shellcheck install.sh tests/run.sh tests/stub/* completions/skvpn.bash
+      - run: nix develop --no-write-lock-file --command shfmt -d -i 2 -ci install.sh tests/run.sh tests/stub/* completions/skvpn.bash
       # zsh is not shellcheck's language; a parse is what can be checked
       - run: nix run nixpkgs#zsh -- -n completions/_skvpn
