@@ -8,6 +8,9 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 - a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice`, rollback with `--no-fix-discord-voice`, and `--uninstall`
 - dependency preflight with installation guidance for Arch, CachyOS, Debian and Ubuntu
+- `tun.stack` and `--stack`: the TUN's TCP/IP stack, now `mixed` — sing-box's own default — instead of a hardcoded `system`
+- `tun.ipv6` and `--no-ipv6`: drop the TUN's v6 address on a host with no IPv6 upstream, where `auto_route` otherwise installs a v6 default route to nowhere and whatever reaches for v6 first waits on it
+- `up` and `status` name a system proxy when they find one: a TUN never sees what an application hands to a local proxy instead, so a leftover proxy from another client silently keeps the browser and every Electron app off the tunnel
 
 ## [1.0.0] - 2026-08-29
 

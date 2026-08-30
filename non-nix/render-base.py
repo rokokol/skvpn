@@ -29,6 +29,13 @@ PRESETS = {
 }
 
 
+# The TUN's own addresses. --no-ipv6 drops the v6 one: with auto_route on a host
+# without a v6 upstream it installs a v6 default route to nowhere, and whatever
+# reaches for v6 first waits on it
+TUN_ADDRESS4 = "172.19.0.1/30"
+TUN_ADDRESS6 = "fdfe:dcba:9876::1/126"
+
+
 def tagged_path(value):
     try:
         tag, path = value.split("=", 1)
@@ -48,6 +55,8 @@ parser.add_argument("--direct-geoip", action="append", type=tagged_path, default
 parser.add_argument("--tun-interface", default="skvpn-tun")
 parser.add_argument("--tun-address", action="append")
 parser.add_argument("--dns-server", default="8.8.8.8")
+parser.add_argument("--stack", choices=("system", "gvisor", "mixed"), default="mixed")
+parser.add_argument("--no-ipv6", dest="ipv6", action="store_false")
 parser.add_argument("--rule-set-dir", default="/usr/share/sing-box/rule-set")
 parser.add_argument("--skip-path-check", action="store_true")
 args = parser.parse_args()
@@ -89,11 +98,12 @@ inbound = {
     "type": "tun",
     "tag": "tun-in",
     "interface_name": args.tun_interface,
-    "address": args.tun_address or ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+    "address": args.tun_address
+    or ([TUN_ADDRESS4, TUN_ADDRESS6] if args.ipv6 else [TUN_ADDRESS4]),
     "auto_route": True,
     "auto_redirect": True,
     "strict_route": False,
-    "stack": "system",
+    "stack": args.stack,
 }
 if args.tailscale:
     inbound["route_exclude_address"] = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]

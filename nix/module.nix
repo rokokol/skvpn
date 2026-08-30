@@ -129,7 +129,7 @@ let
           # reaches it
           auto_redirect = true;
           strict_route = false;
-          stack = "system";
+          stack = cfg.tun.stack;
         }
         # A tailnet address pulled into the TUN answers over lo, and Tailscale's antispoof
         # drops any tailnet source that did not arrive on tailscale0
@@ -207,13 +207,38 @@ in
         description = "Name of the TUN interface the client creates";
       };
 
+      ipv6 = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Give the TUN an IPv6 address. Turn this off on a host with no IPv6 upstream:
+          auto_route otherwise installs a v6 default route to nowhere, and everything that
+          reaches for v6 first — Happy Eyeballs in the browsers, the addresses baked into
+          Telegram — waits on it. The DNS strategy does not cover this: it only decides what
+          sing-box itself resolves, and an application carrying its own addresses never asks.
+          Ignored once `address` is set by hand
+        '';
+      };
+
       address = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default = [
-          "172.19.0.1/30"
-          "fdfe:dcba:9876::1/126"
-        ];
+        default = [ "172.19.0.1/30" ] ++ lib.optional cfg.tun.ipv6 "fdfe:dcba:9876::1/126";
+        defaultText = lib.literalExpression ''[ "172.19.0.1/30" "fdfe:dcba:9876::1/126" ]'';
         description = "Addresses of the TUN interface; change on a collision with a real network";
+      };
+
+      stack = lib.mkOption {
+        type = lib.types.enum [
+          "system"
+          "gvisor"
+          "mixed"
+        ];
+        default = "mixed";
+        description = ''
+          The TCP/IP stack behind the TUN. `mixed` is sing-box's own default — gVisor for TCP,
+          the host stack for UDP; `system` hands both to the host, which is lighter but the
+          more fragile of the two under many parallel connections
+        '';
       };
     };
 

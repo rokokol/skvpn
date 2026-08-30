@@ -43,6 +43,8 @@ install.sh — install skvpn
   --tun-interface NAME  TUN interface name (default: skvpn-tun)
   --tun-address CIDR    TUN address; repeatable, replaces both defaults
   --dns-server ADDRESS  DNS-over-TLS server through the proxy (default: 8.8.8.8)
+  --stack NAME          TUN stack: system, gvisor or mixed (default: mixed)
+  --no-ipv6             give the TUN no IPv6 address, for a host without IPv6
   --extra-settings FILE append a sing-box base.d JSON file
   --no-restore          do not restore the active profile on boot
   --sync-interval SPEC  systemd OnCalendar value (default: daily)
@@ -85,11 +87,15 @@ while [[ $# -gt 0 ]]; do
       CONFIG_ARGS+=(--tailscale)
       shift
       ;;
+    --no-ipv6)
+      CONFIG_ARGS+=(--no-ipv6)
+      shift
+      ;;
     --direct-russia | --direct-china | --direct-iran)
       CONFIG_ARGS+=(--preset "${1#--direct-}")
       shift
       ;;
-    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server)
+    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack)
       CONFIG_ARGS+=("$1" "${2:?value required by $1}")
       shift 2
       ;;
@@ -226,6 +232,32 @@ if ((${#missing[@]})); then
   exit 1
 fi
 
+# A TUN carries what the kernel routes; it never sees traffic an application hands to a
+# local proxy instead. A system proxy left over from another VPN client is therefore silent
+# and total — the browser, Telegram and every Electron app keep using it while the tunnel
+# looks up — so say so rather than let it be discovered one broken application at a time
+warn_system_proxy() {
+  local found=() mode=""
+
+  for name in http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; do
+    [[ -z "${!name:-}" ]] || found+=("$name=${!name}")
+  done
+  if [[ -r /etc/environment ]] && grep -qiE '^[[:space:]]*(http|https|all)_proxy=' /etc/environment; then
+    found+=("a proxy setting in /etc/environment")
+  fi
+  if [[ -n "${SUDO_USER:-}" ]] && command -v gsettings >/dev/null; then
+    # gsettings falls back to reading the user's dconf database, so this answers without a
+    # session bus; a desktop that is not GNOME simply has no such schema and stays quiet
+    mode=$(sudo -u "$SUDO_USER" gsettings get org.gnome.system.proxy mode 2>/dev/null || true)
+    [[ "$mode" == "'none'" || -z "$mode" ]] || found+=("org.gnome.system.proxy mode is $mode")
+  fi
+
+  ((${#found[@]})) || return 0
+  printf '\nwarning: a system proxy is configured, and the TUN cannot capture what goes through it:\n' >&2
+  printf '  - %s\n' "${found[@]}" >&2
+  printf 'Turn it off in whatever client set it, then start a fresh login session.\n' >&2
+}
+
 disable_discord_voice_fix() {
   local previous
 
@@ -324,6 +356,10 @@ if ((${#TRUSTED_USERS[@]})); then
         exit 1
       }
     fi
+    # sudo scrubs the proxy variables, and they are exactly what `up` has to warn about:
+    # without them the check runs blind and reports a clean session that is not one
+    printf 'Defaults:%s env_keep += "http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY"\n' \
+      "$user" >>"$rendered_sudoers"
     printf '%s ALL=(root) NOPASSWD: %s\n' "$user" "$skvpn_bin" >>"$rendered_sudoers"
   done
   if [[ -z "$DESTDIR" ]]; then
@@ -469,3 +505,7 @@ if [[ -z "$DESTDIR" ]]; then
 fi
 
 echo "installed to $root/bin/skvpn with completions under $root/share"
+
+if [[ -z "$DESTDIR" ]]; then
+  warn_system_proxy
+fi

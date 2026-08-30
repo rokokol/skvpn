@@ -78,6 +78,10 @@ let
     services.skvpn = {
       enable = true;
       tailscale.enable = true;
+      tun = {
+        ipv6 = false;
+        stack = "gvisor";
+      };
       direct = {
         zones = [
           ".ru"

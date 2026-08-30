@@ -101,6 +101,8 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `sync.interval` | `"daily"` | `OnCalendar` for the subscription refresh |
 | `fixDiscordVoice` | `true` | loosen the firewall's reverse-path filter (as a default an explicit host value beats): replies to tunnelled UDP arrive on the TUN while the route points at the LAN, and a strict filter drops them — Discord voice is how that shows up |
 | `tun.interfaceName`, `tun.address`, `dns.remoteServer` | `skvpn-tun`, `172.19.0.1/30` + ULA, `8.8.8.8` | the base config's fixed points |
+| `tun.ipv6` | `true` | give the TUN a v6 address. Turn it off on a host with no IPv6 upstream: `auto_route` otherwise installs a v6 default route to nowhere, and whatever reaches for v6 first waits on it — the DNS strategy does not cover this, because an application carrying its own addresses never asks |
+| `tun.stack` | `mixed` | the TCP/IP stack behind the TUN: `mixed` is sing-box's own default (gVisor for TCP, the host for UDP), `system` hands both to the host |
 | `package`, `singBoxPackage` | this flake's CLI, `pkgs.sing-box` | what to install and what the unit runs |
 
 ## Completions
@@ -132,7 +134,7 @@ The Arch package supplies the binary, service user and template unit. The instal
 
 Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific installation guidance when anything is missing
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set

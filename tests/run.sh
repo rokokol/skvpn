@@ -188,6 +188,16 @@ else
   fail "up did not start the unit or remember the choice"
 fi
 
+world up-warns-about-a-system-proxy
+sv add "$HY2" >/dev/null
+mkdir -p "$SKVPN_ROOT/etc"
+printf 'https_proxy=http://127.0.0.1:12334\n' >"$SKVPN_ROOT/etc/environment"
+if sv up HY2 | grep -q 'system proxy'; then
+  ok
+else
+  fail "up started a tunnel over a system proxy without saying so"
+fi
+
 world up-refuses-an-unknown-profile
 if sv up nope >/dev/null 2>&1; then
   fail "starting a profile that does not exist was allowed"
@@ -412,6 +422,7 @@ printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
   --tun-interface friend-tun \
   --tun-address 10.42.0.1/30 \
   --dns-server 1.1.1.1 \
+  --stack gvisor \
   --extra-settings "$SKVPN_ROOT/extra.json" \
   --no-restore \
   --sync-interval weekly \
@@ -420,6 +431,7 @@ base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
 if jq -e '
 	.inbounds[0].interface_name == "friend-tun" and
 	.inbounds[0].address == ["10.42.0.1/30"] and
+	.inbounds[0].stack == "gvisor" and
 	(.inbounds[0].route_exclude_address | length == 2)
 ' "$base" >/dev/null &&
   jq -e '.dns.servers[1].server == "1.1.1.1"' "$base" >/dev/null &&
@@ -435,12 +447,24 @@ else
   fail "non-Nix options did not reach their config, unit, or policy files"
 fi
 
+# The TUN's v6 address is the one default a host without IPv6 has to be able to drop, and
+# --tun-address is not that lever: it replaces the pair rather than trimming it
+world installer-drops-the-tun-ipv6-address
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --no-ipv6 >/dev/null
+base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
+if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "mixed"' \
+  "$base" >/dev/null; then
+  ok
+else
+  fail "--no-ipv6 left the TUN a v6 address, or the default stack drifted"
+fi
+
 world installer-help-lists-every-feature
 help=$("$REPO/install.sh" --help)
 missing=""
 for option in tailscale direct-russia direct-china direct-iran direct-zone direct-geosite \
   direct-geoip tun-interface tun-address dns-server extra-settings no-restore sync-interval \
-  trusted-user fix-discord-voice no-fix-discord-voice uninstall; do
+  trusted-user fix-discord-voice no-fix-discord-voice uninstall stack no-ipv6; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"
 done
 if [[ -z "$missing" ]]; then
