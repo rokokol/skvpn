@@ -19,6 +19,7 @@ _skvpn() {
     'down:stop the active profile'
     'restore:start the last active profile'
     'status:show the active profile and sync age'
+    '--version:print the version'
   )
 
   if ((CURRENT == 2)); then

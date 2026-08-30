@@ -14,6 +14,10 @@ let
     name = "skvpn.py";
     path = ../skvpn.py;
   };
+  versionFile = builtins.path {
+    name = "skvpn-VERSION";
+    path = ../VERSION;
+  };
   bashCompletion = builtins.path {
     name = "skvpn.bash";
     path = ../completions/skvpn.bash;
@@ -26,7 +30,8 @@ in
 
 stdenvNoCC.mkDerivation {
   pname = "skvpn";
-  version = "1.0.0";
+  # VERSION is the one place the number lives; CI holds CHANGELOG.md to it
+  version = lib.fileContents ../VERSION;
 
   dontUnpack = true;
   nativeBuildInputs = [
@@ -48,6 +53,8 @@ stdenvNoCC.mkDerivation {
 
     install -Dm755 ${script} $out/bin/skvpn
     patchShebangs $out/bin
+    # skvpn --version reads this at share/skvpn/VERSION relative to the binary
+    install -Dm644 ${versionFile} $out/share/skvpn/VERSION
 
     installShellCompletion --bash --name skvpn ${bashCompletion}
     installShellCompletion --zsh --name _skvpn ${zshCompletion}

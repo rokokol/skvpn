@@ -22,6 +22,13 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
+      - name: VERSION matches CHANGELOG
+        run: |
+          ver=$(cat VERSION)
+          grep -qF "## [$ver]" CHANGELOG.md || {
+            echo "VERSION says $ver but CHANGELOG.md has no ## [$ver] heading" >&2
+            exit 1
+          }
       - run: nix build --no-write-lock-file
       # tests, package-smoke, module-wiring, nixos-eval, scripts-lint
       - run: nix flake check --no-write-lock-file
@@ -33,10 +40,17 @@ jobs:
           test -x stage/usr/bin/skvpn
           test -f stage/usr/share/bash-completion/completions/skvpn
           test -f stage/usr/share/zsh/site-functions/_skvpn
+          test -f stage/usr/share/skvpn/install-manifest
           SKVPN=$PWD/stage/usr/bin/skvpn ./tests/run.sh
+          # A staged uninstall consumes the staged manifest and leaves the tree empty
+          DESTDIR=$PWD/stage PREFIX=/usr ./install.sh --uninstall
+          test ! -e stage/usr/bin/skvpn
+          test ! -e stage/usr/share/skvpn
           ! DESTDIR=$PWD/bad PREFIX=usr ./install.sh >/dev/null 2>&1
       - run: nix fmt -- --ci
 
+  # The one file list lives in the flake's scripts-lint check — this job is a fast,
+  # separately-named status for it, not a second copy of the commands
   shell:
     runs-on: ubuntu-latest
     steps:
@@ -44,7 +58,4 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
-      - run: nix develop --no-write-lock-file --command shellcheck install.sh tests/run.sh tests/stub/* completions/skvpn.bash
-      - run: nix develop --no-write-lock-file --command shfmt -d -i 2 -ci install.sh tests/run.sh tests/stub/* completions/skvpn.bash
-      # zsh is not shellcheck's language; a parse is what can be checked
-      - run: nix run nixpkgs#zsh -- -n completions/_skvpn
+      - run: nix build --no-write-lock-file .#checks.x86_64-linux.scripts-lint

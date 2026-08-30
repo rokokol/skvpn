@@ -41,6 +41,7 @@ def tagged_path(value):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tailscale", action="store_true")
+parser.add_argument("--docker", action="store_true")
 parser.add_argument("--preset", action="append", choices=PRESETS, default=[])
 parser.add_argument("--direct-zone", action="append", default=[])
 parser.add_argument("--direct-geosite", action="append", type=tagged_path, default=[])
@@ -97,6 +98,8 @@ inbound = {
 }
 if args.tailscale:
     inbound["route_exclude_address"] = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+if args.docker:
+    inbound["exclude_interface"] = ["docker0"]
 
 route_rules = [
     {"action": "sniff"},

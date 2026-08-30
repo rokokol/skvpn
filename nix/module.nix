@@ -139,6 +139,12 @@ let
             "fd7a:115c:a1e0::/48"
           ];
         }
+        # Container traffic pulled into the TUN never finds its way back to the bridge;
+        # excluded by interface rather than by address, because docker's pools are
+        # host-configurable and overlap the TUN's own default subnet
+        // lib.optionalAttrs cfg.docker.enable {
+          exclude_interface = [ "docker0" ];
+        }
       )
     ];
 
@@ -232,6 +238,17 @@ in
         answers over `lo`, and Tailscale's antispoof rule drops any tailnet source that did
         not arrive on `tailscale0` — so with both running, the tailnet is unreachable unless
         it is excluded here
+      '';
+    };
+
+    docker.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.virtualisation.docker.enable or false;
+      defaultText = lib.literalExpression "config.virtualisation.docker.enable";
+      description = ''
+        Keep the `docker0` bridge out of the TUN. Container traffic pulled into the
+        tunnel never finds its way back to the bridge, so with both running the
+        containers lose the network unless the bridge is excluded here
       '';
     };
 

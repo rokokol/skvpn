@@ -438,15 +438,24 @@ fi
 world installer-help-lists-every-feature
 help=$("$REPO/install.sh" --help)
 missing=""
-for option in tailscale direct-russia direct-china direct-iran direct-zone direct-geosite \
+for option in help version prefix destdir uninstall no-systemd tailscale docker \
+  direct-russia direct-china direct-iran direct-zone direct-geosite \
   direct-geoip tun-interface tun-address dns-server extra-settings no-restore sync-interval \
-  trusted-user fix-discord-voice no-fix-discord-voice uninstall; do
+  trusted-user fix-discord-voice; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"
 done
 if [[ -z "$missing" ]]; then
   ok
 else
   fail "installer help omits:$missing"
+fi
+
+world installer-prints-its-version
+want="skvpn $(cat "$REPO/VERSION")"
+if [[ "$("$REPO/install.sh" --version)" == "$want" && "$("$REPO/install.sh" -v)" == "$want" ]]; then
+  ok
+else
+  fail "--version does not answer with the VERSION file's number"
 fi
 
 world installer-reports-all-missing-dependencies
@@ -460,14 +469,18 @@ installer_env=(
   "OS_RELEASE=$SKVPN_ROOT/os-release"
   "SYSTEMCTL_FAIL=cat sing-box@.service"
 )
+# The guidance lines are matched whole (grep -qxF): the harness that runs them in the
+# distro tests extracts exactly these, so a substring match here could bless a line
+# nobody can actually type
 if out=$(env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
   fail "installation continued with missing runtime dependencies"
 elif [[ "$out" == *"sing-box ($SKVPN_ROOT/missing-sing-box)"* &&
   "$out" == *"sing-box@.service"* &&
   "$out" == *"sing-box service user (missing-sing-box-user)"* &&
-  "$out" == *"official APT repository"* &&
-  "$out" == *"sing-box.sagernet.org/installation/package-manager"* &&
-  ! -e "$SKVPN_ROOT/usr/bin/skvpn" ]]; then
+  "$out" == *"official APT repository"* ]] &&
+  grep -qxF '  $ sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc' <<<"$out" &&
+  grep -qxF '  $ sudo apt-get install sing-box' <<<"$out" &&
+  [[ ! -e "$SKVPN_ROOT/usr/bin/skvpn" ]]; then
   ok
 else
   fail "dependency preflight did not aggregate failures or show the Ubuntu guidance"
@@ -478,7 +491,7 @@ printf 'ID=cachyos\nID_LIKE=arch\n' >"$SKVPN_ROOT/os-release"
 if out=$(OS_RELEASE="$SKVPN_ROOT/os-release" SING_BOX="$SKVPN_ROOT/missing" \
   "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
   fail "installation continued without sing-box on CachyOS"
-elif [[ "$out" == *"sudo pacman -S --needed sing-box"* ]]; then
+elif grep -qxF '  $ sudo pacman -S --needed sing-box' <<<"$out"; then
   ok
 else
   fail "the CachyOS preflight did not print the package command"
@@ -515,6 +528,8 @@ else
   fail "an unmanaged config changed before the installer refused it"
 fi
 
+# The single flag is declarative: a run without it converges the system back, the way
+# unsetting the NixOS option does on rebuild — there is no --no-fix-discord-voice
 world discord-voice-fix-is-idempotent-and-reversible
 export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
 printf '1\n' >"$SYSCTL_STATE"
@@ -536,12 +551,12 @@ env "${installer_env[@]}" "$REPO/install.sh" "${install_args[@]}" >/dev/null
 env "${installer_env[@]}" "$REPO/install.sh" "${install_args[@]}" >/dev/null
 saved="$SKVPN_ROOT/var/lib/skvpn/install-state/rp-filter-before-discord-voice"
 env "${installer_env[@]}" \
-  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --no-fix-discord-voice >/dev/null
+  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null
 if [[ "$(<"$SYSCTL_STATE")" == 1 && ! -e "$saved" &&
 ! -e "$SKVPN_ROOT/etc/sysctl.d/90-skvpn.conf" ]]; then
   ok
 else
-  fail "a repeated install lost the old rp_filter value, or disabling did not restore it"
+  fail "a repeated install lost the old rp_filter value, or a flagless run did not restore it"
 fi
 
 world uninstall-removes-every-installed-file
@@ -561,9 +576,28 @@ installer_env=(
   "PROFILES_MODE=755"
 )
 env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --fix-discord-voice >/dev/null
+manifest="$SKVPN_ROOT/usr/share/skvpn/install-manifest"
+manifest_complete=1
+if [[ ! -f "$manifest" ]]; then
+  manifest_complete=0
+else
+  # Every path the manifest names must exist before the uninstall and be gone after it —
+  # a manifest that names nothing would pass a bare existence check
+  while IFS= read -r path; do
+    [[ -z "$path" || "$path" == \#* ]] && continue
+    [[ -e "$path" ]] || manifest_complete=0
+  done <"$manifest"
+fi
+mapfile -t manifest_paths < <(grep -v '^#' "$manifest" 2>/dev/null || true)
 env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --uninstall >/dev/null
 env "${installer_env[@]}" "$REPO/install.sh" "${common_args[@]}" --uninstall >/dev/null
-if [[ "$(<"$SYSCTL_STATE")" == 0 && ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+leftover=""
+for path in "${manifest_paths[@]}"; do
+  [[ ! -e "$path" ]] || leftover+=" $path"
+done
+if [[ "$(<"$SYSCTL_STATE")" == 0 && "$manifest_complete" == 1 &&
+"${#manifest_paths[@]}" -ge 8 && -z "$leftover" &&
+! -e "$manifest" && ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
 ! -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
 ! -e "$SKVPN_ROOT/systemd/sing-box@.service.d/skvpn.conf" &&
 ! -e "$SKVPN_ROOT/systemd/skvpn-restore.service" &&
@@ -572,7 +606,72 @@ if [[ "$(<"$SYSCTL_STATE")" == 0 && ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
 ! -e "$SKVPN_ROOT/etc/sysctl.d/90-skvpn.conf" ]]; then
   ok
 else
-  fail "uninstall did not restore policy and remove every file, or was not repeatable"
+  fail "uninstall did not consume the manifest, restore policy, or repeat quietly"
+fi
+
+# Installs made before the manifest existed: --uninstall still takes them out by the
+# fixed list. This arm leaves one release after 1.1
+world uninstall-falls-back-without-a-manifest
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null
+rm -rf "$SKVPN_ROOT/usr/share/skvpn"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall >/dev/null
+if [[ ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+  ! -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
+  ! -e "$SKVPN_ROOT/systemd/skvpn-sync.timer" ]]; then
+  ok
+else
+  fail "an install without a manifest could not be uninstalled"
+fi
+
+world installer-renders-docker-exclusion
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --docker >/dev/null
+base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/bare-stage" >/dev/null
+bare_base="$SKVPN_ROOT/bare-stage/etc/sing-box/base.d/00-base.json"
+if jq -e '.inbounds[0].exclude_interface == ["docker0"]' "$base" >/dev/null &&
+  jq -e '.inbounds[0] | has("exclude_interface") | not' "$bare_base" >/dev/null; then
+  ok
+else
+  fail "--docker did not reach exclude_interface, or a bare render carries it"
+fi
+
+# --no-systemd is a real install that must not say a word to systemd; the stub log is
+# the whole record of what would have been said
+world no-systemd-install-stays-silent-toward-systemd
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+)
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --no-systemd --fix-discord-voice >/dev/null
+install_log="$(<"$SYSTEMCTL_LOG")"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --no-systemd --uninstall >/dev/null
+if [[ -z "$install_log" && -z "$(<"$SYSTEMCTL_LOG")" &&
+"$(<"$SYSCTL_STATE")" == 0 &&
+! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+! -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" ]]; then
+  ok
+else
+  fail "--no-systemd talked to systemd or sysctl, or its uninstall left files"
 fi
 
 world uninstall-keeps-files-when-stop-fails
@@ -599,6 +698,14 @@ elif [[ -e "$SKVPN_ROOT/usr/bin/skvpn" &&
   ok
 else
   fail "uninstall deleted runtime files after an active-instance stop failed"
+fi
+
+world skvpn-prints-its-version
+want="skvpn $(cat "$REPO/VERSION")"
+if [[ "$(sv --version)" == "$want" && "$(sv -v)" == "$want" ]]; then
+  ok
+else
+  fail "skvpn --version does not answer with the VERSION file's number"
 fi
 
 world unknown-command-fails

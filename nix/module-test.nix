@@ -78,6 +78,7 @@ let
     services.skvpn = {
       enable = true;
       tailscale.enable = true;
+      docker.enable = true;
       direct = {
         zones = [
           ".ru"

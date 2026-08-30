@@ -39,6 +39,10 @@
         name = "skvpn.py";
         path = ./skvpn.py;
       };
+      versionFile = builtins.path {
+        name = "skvpn-VERSION";
+        path = ./VERSION;
+      };
       installer = builtins.path {
         name = "install.sh";
         path = ./install.sh;
@@ -112,6 +116,7 @@
               ''
                 mkdir -p repo
                 cp ${script} repo/skvpn.py
+                cp ${versionFile} repo/VERSION
                 cp ${installer} repo/install.sh
                 cp -r ${nonNixDir} repo/non-nix
                 cp -r ${completionsDir} repo/completions
@@ -170,6 +175,7 @@
                 want '.base | fromjson | .route.rules[-2].domain_suffix == [".ru", ".su"]' "zones never reached routing"
                 want '.base | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "rule-set files are not store paths"
                 want '.base | fromjson | .inbounds[0].route_exclude_address == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]' "the tailnet is not excluded"
+                want '.base | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "the docker bridge is not excluded"
                 want '.base | fromjson | .route.final == "proxy"' "the default route is not the tunnel"
                 want '.extra | fromjson | .log.level == "debug"' "extraSettings never reached base.d"
                 want '.timerInterval == "weekly"' "the sync interval never reached the timer"
@@ -191,6 +197,7 @@
                 want '.bareBase | fromjson | .dns.rules == []' "a DNS rule appeared out of thin air"
                 want '.bareBase | fromjson | .route.rules | length == 3' "a route rule appeared out of thin air"
                 want '.bareBase | fromjson | .inbounds[0] | has("route_exclude_address") | not' "a tailnet exclusion appeared without Tailscale"
+                want '.bareBase | fromjson | .inbounds[0] | has("exclude_interface") | not' "a docker exclusion appeared without docker"
                 want '.bareEtc == ["sing-box/base.d/00-base.json"]' "an empty extraSettings still wrote a file"
                 want '.bareAliases == {}' "an alias appeared without trustedUsers"
 
@@ -237,16 +244,17 @@
                 want() { jq -e "$1" "$dumpPath" >/dev/null || { echo "nixos eval: $2"; exit 1; }; }
 
                 want 'keys == [
-                  "enabledAlias", "enabledBase", "enabledBroken", "enabledExtra",
-                  "enabledFirewall", "enabledRestore", "enabledSudo", "enabledTimer",
-                  "enabledTmpfiles", "hostStrictBroken", "hostStrictFirewall", "offAlias",
-                  "offBroken", "offEtc", "offRestore", "offUser", "restoreOffPresent",
-                  "restoreOffTemplate", "singBoxUserGroup"
+                  "dockerFollowBase", "enabledAlias", "enabledBase", "enabledBroken",
+                  "enabledExtra", "enabledFirewall", "enabledRestore", "enabledSudo",
+                  "enabledTimer", "enabledTmpfiles", "hostStrictBroken",
+                  "hostStrictFirewall", "offAlias", "offBroken", "offEtc", "offRestore",
+                  "offUser", "restoreOffPresent", "restoreOffTemplate", "singBoxUserGroup"
                 ]' "the dump no longer has the keys these checks read"
 
                 want '.enabledBroken == []' "an enabled module breaks the system"
                 want '.enabledBase | fromjson | .route.final == "proxy"' "the base did not survive the real module set"
                 want '.enabledBase | fromjson | .inbounds[0].route_exclude_address | length == 2' "the tailnet exclusion did not survive"
+                want '.dockerFollowBase | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "docker.enable did not follow the host docker switch"
                 want '.enabledExtra | fromjson | .log.level == "debug"' "extraSettings did not survive"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"
@@ -283,14 +291,22 @@
                 ];
               }
               ''
-                files="${./install.sh} ${testsDir}/run.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash"
+                files="${installer} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/check-completions.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash"
                 # shellcheck disable=SC2086
                 shellcheck $files
                 # shellcheck disable=SC2086
                 shfmt -d -i 2 -ci $files
                 # zsh is not shellcheck's language; a parse is what can be checked
                 zsh -n ${completionsDir}/_skvpn
+                zsh -n ${completionsDir}/install.sh.zsh
                 flake8 --max-line-length=88 ${nonNixDir}/render-base.py
+
+                # install.sh and its completions must not drift apart
+                mkdir -p repo/tests
+                cp ${installer} repo/install.sh
+                cp -r ${completionsDir} repo/completions
+                cp ${testsDir}/check-completions.sh repo/tests/
+                bash repo/tests/check-completions.sh
                 touch $out
               '';
         }

@@ -6,8 +6,19 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ### Added
 
-- a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice`, rollback with `--no-fix-discord-voice`, and `--uninstall`
-- dependency preflight with installation guidance for Arch, CachyOS, Debian and Ubuntu
+- a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice` and `--uninstall`
+- dependency preflight with installation guidance for Arch, CachyOS, Debian, Ubuntu and Fedora — every runnable step printed as a `$ command` line, and the distro suite runs exactly those lines, so the guidance cannot rot unnoticed
+- `docker.enable` and the matching installer flag `--docker`: keep the `docker0` bridge out of the TUN, following `virtualisation.docker.enable` by default the way the Tailscale exclusion follows its service
+- a `VERSION` file as the one place the version lives: `nix/package.nix` reads it, `skvpn --version`/`-v` and `./install.sh --version`/`-v` print it, and CI refuses a release whose `CHANGELOG.md` has no heading for it
+- `--uninstall` by manifest: the install writes `share/skvpn/install-manifest` naming every file it created, and uninstall consumes it — installs made before the manifest are still removed by the old fixed list for one release
+- `--no-systemd`: a real install that skips every live `systemctl` and `sysctl` call, for containers and image builds without PID 1 systemd
+- tab completion for `install.sh` itself (`source completions/install.sh.bash` or `.zsh`), with a drift check that fails the lint when a flag exists in only one of the three places
+- distro tests: `tests/distro.sh` installs for real, as root, in `debian`/`ubuntu`/`archlinux`/`fedora` `:latest` containers by running the preflight's own printed guidance, then exercises the CLI and uninstalls by the manifest; CI runs them on every push to master and weekly, never on pull requests, with one README badge per distribution
+
+### Changed
+
+- **the installer is declarative**: each run converges the system to exactly the flags given, so a run without `--fix-discord-voice` now removes the fix and restores the saved reverse-path filter value — `--no-fix-discord-voice` is gone, its behavior is the default
+- the shell lint's file list lives only in the flake's `scripts-lint` check; the CI shell job builds that check instead of repeating the commands
 
 ## [1.0.0] - 2026-08-29
 

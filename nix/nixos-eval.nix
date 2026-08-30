@@ -54,6 +54,13 @@ let
     };
   };
 
+  # docker.enable defaults to following the host's own docker switch, the way
+  # tailscale.enable follows services.tailscale — nothing under services.skvpn set here
+  dockerFollow = evalWith {
+    virtualisation.docker.enable = true;
+    services.skvpn.enable = true;
+  };
+
   # The host's own explicit value has to win over the module's default-priority "loose"
   hostStrict = evalWith {
     networking.firewall.checkReversePath = true;
@@ -84,6 +91,8 @@ in
     rule: lib.any (c: c.command or "" == "/run/current-system/sw/bin/skvpn") (rule.commands or [ ])
   ) enabled.security.sudo.extraRules;
   enabledAlias = enabled.environment.shellAliases.skvpn or null;
+
+  dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
 
   hostStrictBroken = broken hostStrict;
   hostStrictFirewall = hostStrict.networking.firewall.checkReversePath;

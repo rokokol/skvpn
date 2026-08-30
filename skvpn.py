@@ -439,6 +439,16 @@ def cmd_status(_args):
         print(f"  synced    {age} min ago")
 
 
+def version():
+    # Beside the script in a checkout; under share/ once installed (install.sh and the
+    # Nix package both put it there)
+    here = Path(__file__).resolve().parent
+    for candidate in (here / "VERSION", here.parent / "share/skvpn/VERSION"):
+        if candidate.is_file():
+            return candidate.read_text().strip()
+    return "unknown"
+
+
 COMMANDS = {
     "sub": cmd_sub,
     "add": cmd_add,
@@ -452,8 +462,11 @@ COMMANDS = {
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version"):
+        print(f"skvpn {version()}")
+        return
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        die(f"usage: skvpn {{{'|'.join(COMMANDS)}}} …")
+        die(f"usage: skvpn {{{'|'.join(COMMANDS)}}} … | --version")
     COMMANDS[sys.argv[1]](sys.argv[2:])
 
 

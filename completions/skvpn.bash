@@ -6,7 +6,7 @@ _skvpn() {
   local cmd=${COMP_WORDS[1]-}
 
   if ((COMP_CWORD == 1)); then
-    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restore status" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restore status --version" -- "$cur")
     return
   fi
 

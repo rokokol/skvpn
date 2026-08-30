@@ -9,6 +9,10 @@
 ![Nix](https://img.shields.io/badge/Nix-flake-7EBAE4?style=flat&logo=nixos&logoColor=white)
 [![license](https://img.shields.io/badge/MIT-3DA639?style=flat)](LICENSE)
 [![build](https://github.com/rokokol/skvpn/actions/workflows/build.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/build.yml)
+[![debian](https://github.com/rokokol/skvpn/actions/workflows/distro-debian.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-debian.yml)
+[![ubuntu](https://github.com/rokokol/skvpn/actions/workflows/distro-ubuntu.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-ubuntu.yml)
+[![arch](https://github.com/rokokol/skvpn/actions/workflows/distro-arch.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-arch.yml)
+[![fedora](https://github.com/rokokol/skvpn/actions/workflows/distro-fedora.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-fedora.yml)
 
 </div>
 
@@ -94,6 +98,7 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `direct.zones` | `[ ]` | domain suffixes resolved by the local bootstrap and routed past the tunnel |
 | `direct.geosite` / `direct.geoip` | `{ }` | local binary rule-sets routed direct, keyed by tag; local on purpose — a remote set would arrive through the tunnel it is meant to steer |
 | `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges out of the TUN |
+| `docker.enable` | follows `virtualisation.docker.enable` | keep the `docker0` bridge out of the TUN — container traffic pulled into the tunnel never finds its way back to the bridge |
 | `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box `-C` semantics: objects merge, arrays append, scalars replace |
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
@@ -121,24 +126,26 @@ then import `inputs.skvpn.nixosModules.default` and enable as above. Without the
 
 ```sh
 sudo pacman -S sing-box
-sudo ./install.sh                    # PREFIX=/usr/local; --prefix/--destdir supported
+sudo ./install.sh                     # PREFIX=/usr/local; --prefix/--destdir supported
 sudo ./install.sh --fix-discord-voice # loosen IPv4 reverse-path filtering for tunnelled UDP
-sudo ./install.sh --no-fix-discord-voice # remove the fix and restore the previous value
-sudo ./install.sh --uninstall        # remove the CLI, completions and installed settings
+sudo ./install.sh --uninstall         # remove everything by the install manifest
+./install.sh --version                # skvpn x.y.z, from the VERSION file
 ```
 
-The Arch package supplies the binary, service user and template unit. The installer adds the base config, an `ExecStart` drop-in for skvpn's split base/profile layout, boot restore and the daily subscription timer. `--fix-discord-voice` writes `/etc/sysctl.d/90-skvpn.conf` with loose IPv4 reverse-path filtering. A live installation remembers the value it replaced, so both `--no-fix-discord-voice` and `--uninstall` restore it; repeating any of these commands is safe. `--uninstall` leaves profiles, the subscription and active-profile state intact. With `--destdir` files are only staged
+The Arch package supplies the binary, service user and template unit. The installer adds the base config, an `ExecStart` drop-in for skvpn's split base/profile layout, boot restore and the daily subscription timer, and writes an install manifest under `share/skvpn` naming every file it created — `--uninstall` consumes that manifest, so it removes exactly what was written and leaves profiles, the subscription and active-profile state intact. With `--destdir` files are only staged; `--no-systemd` is a real install that skips every live `systemctl` and `sysctl` call, for containers and image builds
 
-Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific installation guidance when anything is missing
+Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific guidance when anything is missing — every runnable line as `$ command`, exactly what to type; nothing is ever installed on your behalf
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, `--tun-interface`, repeatable `--tun-address`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set
 sudo ./install.sh --direct-russia
 ```
 
-`./install.sh --help` is the complete command reference. Installer flags describe the desired generated configuration, so repeat the same command to reproduce it; omitted routing and service options return to their defaults. The Discord fix is preserved when omitted because removing a host firewall setting must be explicit
+`./install.sh --help` is the complete command reference. The installer is declarative: each run converges the system to exactly the flags given, so repeating a command reproduces its state and omitting a flag — the Discord fix included — undoes what that flag installed, the way unsetting a NixOS option does on rebuild
+
+Tab completion for the installer itself is in the checkout: `source completions/install.sh.bash` (or `completions/install.sh.zsh`), and `./install.sh --<TAB>` knows every flag above
 
 ## Tests
 
@@ -146,4 +153,8 @@ sudo ./install.sh --direct-russia
 ./tests/run.sh           # scratch SKVPN_ROOT, stubbed systemctl, file:// subscriptions
 ./tests/run.sh --update  # rewrite the golden parser outputs
 nix flake check          # the suite, the packaged CLI, module wiring, a real-nixpkgs eval, shell lint
+./tests/distro.sh debian # real root install in a docker container: preflight → its own printed
+                         # guidance → install → smoke → uninstall; also ubuntu, arch, fedora
 ```
+
+The distro suite runs in CI on every push to master and weekly against each distribution's `:latest` image — the badges above are its verdicts — but never on pull requests, so a flaky mirror cannot redden a change

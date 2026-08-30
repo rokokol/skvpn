@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+VERSION=$(cat "$here/VERSION")
+
 PREFIX="${PREFIX:-/usr/local}"
 DESTDIR="${DESTDIR:-}"
 SYSCONFDIR="${SYSCONFDIR:-/etc}"
@@ -13,7 +16,8 @@ SERVICE_GROUP="${SERVICE_GROUP:-sing-box}"
 PROFILES_OWNER="${PROFILES_OWNER:-root}"
 PROFILES_MODE="${PROFILES_MODE:-2755}"
 OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
-DISCORD_VOICE_ACTION=""
+DISCORD_VOICE=0
+SYSTEMD=1
 CONFIG_ARGS=()
 RESTORE=1
 SYNC_INTERVAL=daily
@@ -23,35 +27,50 @@ UNINSTALL=0
 
 usage() {
   cat <<EOF
-install.sh — install skvpn
+install.sh — install skvpn $VERSION
+
+Each run converges the system to exactly the flags given: re-running without a flag
+undoes what that flag installed, the way unsetting a NixOS option does on rebuild.
 
   PREFIX=$PREFIX (override with PREFIX=... or --prefix DIR)
   DESTDIR=${DESTDIR:-<empty>} (override with DESTDIR=... or --destdir DIR for staging)
 
-  --fix-discord-voice  use loose IPv4 reverse-path filtering for tunnelled UDP
-  --no-fix-discord-voice
-                       remove the fix and restore the previous live value
-  --tailscale           keep Tailscale address ranges out of the TUN
-  --direct-russia       route Russian zones, geosite and geoip directly
-  --direct-china        route Chinese zones, geosite and geoip directly
-  --direct-iran         route Iranian zones, geosite and geoip directly
-  --direct-zone SUFFIX  route an additional domain suffix directly; repeatable
+  -h, --help           show this help and exit
+  -v, --version        print the version and exit
+      --prefix DIR     install prefix (default: /usr/local)
+      --destdir DIR    staging root: files land under DESTDIR/PREFIX and no live
+                       system state is touched
+      --uninstall      remove skvpn and settings installed by this script
+      --no-systemd     a real install that skips every live systemctl and sysctl
+                       call — for containers and image builds without PID 1 systemd
+  --fix-discord-voice  use loose IPv4 reverse-path filtering for tunnelled UDP;
+                       absent, the fix is removed and the previous value restored
+  --tailscale          keep Tailscale address ranges out of the TUN
+  --docker             keep the docker0 bridge out of the TUN
+  --direct-russia      route Russian zones, geosite and geoip directly
+  --direct-china       route Chinese zones, geosite and geoip directly
+  --direct-iran        route Iranian zones, geosite and geoip directly
+  --direct-zone SUFFIX route an additional domain suffix directly; repeatable
   --direct-geosite TAG=PATH
                        add a local domain rule-set; repeatable
   --direct-geoip TAG=PATH
                        add a local address rule-set; repeatable
-  --tun-interface NAME  TUN interface name (default: skvpn-tun)
-  --tun-address CIDR    TUN address; repeatable, replaces both defaults
-  --dns-server ADDRESS  DNS-over-TLS server through the proxy (default: 8.8.8.8)
-  --extra-settings FILE append a sing-box base.d JSON file
-  --no-restore          do not restore the active profile on boot
-  --sync-interval SPEC  systemd OnCalendar value (default: daily)
-  --trusted-user USER   grant passwordless sudo for skvpn; repeatable
-  --uninstall          remove skvpn and settings installed by this script
+  --tun-interface NAME TUN interface name (default: skvpn-tun)
+  --tun-address CIDR   TUN address; repeatable, replaces both defaults
+  --dns-server ADDRESS DNS-over-TLS server through the proxy (default: 8.8.8.8)
+  --extra-settings FILE
+                       append a sing-box base.d JSON file
+  --no-restore         do not restore the active profile on boot
+  --sync-interval SPEC systemd OnCalendar value (default: daily)
+  --trusted-user USER  grant passwordless sudo for skvpn; repeatable
 
-The CLI goes to \$PREFIX/bin/skvpn, completions to \$PREFIX/share, the base config to
-\$SYSCONFDIR/sing-box/base.d, and units to \$SYSTEMD_UNITDIR. python3, systemd, and
-sing-box must already be installed; a failed preflight prints distro-specific guidance
+The CLI goes to \$PREFIX/bin/skvpn, completions and the install manifest to
+\$PREFIX/share, the base config to \$SYSCONFDIR/sing-box/base.d, and units to
+\$SYSTEMD_UNITDIR. python3, systemd, and sing-box must already be installed; a failed
+preflight prints distro-specific guidance and installs nothing on its own.
+
+Runtime environment (read by the installed skvpn, not this script):
+  SKVPN_ROOT           relocate every path skvpn touches (default: /)
 EOF
 }
 
@@ -66,23 +85,15 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --fix-discord-voice)
-      [[ -z "$DISCORD_VOICE_ACTION" ]] || {
-        echo "install.sh: Discord voice options are mutually exclusive" >&2
-        exit 1
-      }
-      DISCORD_VOICE_ACTION=enable
+      DISCORD_VOICE=1
       shift
       ;;
-    --no-fix-discord-voice)
-      [[ -z "$DISCORD_VOICE_ACTION" ]] || {
-        echo "install.sh: Discord voice options are mutually exclusive" >&2
-        exit 1
-      }
-      DISCORD_VOICE_ACTION=disable
+    --no-systemd)
+      SYSTEMD=0
       shift
       ;;
-    --tailscale)
-      CONFIG_ARGS+=(--tailscale)
+    --tailscale | --docker)
+      CONFIG_ARGS+=("$1")
       shift
       ;;
     --direct-russia | --direct-china | --direct-iran)
@@ -113,6 +124,10 @@ while [[ $# -gt 0 ]]; do
       UNINSTALL=1
       shift
       ;;
+    -v | --version)
+      echo "skvpn $VERSION"
+      exit 0
+      ;;
     -h | --help)
       usage
       exit 0
@@ -132,7 +147,7 @@ if [[ "$SYSCONFDIR" != /* || "$LOCALSTATEDIR" != /* || "$SYSTEMD_UNITDIR" != /* 
   echo "install.sh: SYSCONFDIR, LOCALSTATEDIR, and SYSTEMD_UNITDIR must be absolute" >&2
   exit 1
 fi
-if ((UNINSTALL)) && [[ -n "$DISCORD_VOICE_ACTION" ]]; then
+if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
   echo "install.sh: --uninstall already removes the Discord voice fix" >&2
   exit 1
 fi
@@ -144,7 +159,6 @@ if ((UNINSTALL)) && {
   exit 1
 fi
 
-here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 root="${DESTDIR%/}$PREFIX"
 sysconf_root="${DESTDIR%/}$SYSCONFDIR"
 state_root="${DESTDIR%/}$LOCALSTATEDIR/lib/skvpn/install-state"
@@ -159,18 +173,39 @@ skvpn_bin="$PREFIX/bin/skvpn"
 sing_box_dropin="$unit_root/sing-box@.service.d/skvpn.conf"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
 profile_file="$sysconf_root/profile.d/skvpn.sh"
+manifest_file="$root/share/skvpn/install-manifest"
+
+# live: writing the real filesystem, not a staging tree. live_sys: live and allowed to
+# talk to systemd — --no-systemd installs the very same files but skips every systemctl,
+# systemd-analyze and sysctl call, which is what containers and image builds need
+live=0
+[[ -z "$DESTDIR" ]] && live=1
+live_sys=0
+((live && SYSTEMD)) && live_sys=1
 
 missing=()
 sing_box_missing=0
+python3_missing=0
 for command in install mktemp python3; do
-  command -v "$command" >/dev/null || missing+=("$command")
+  command -v "$command" >/dev/null || {
+    missing+=("$command")
+    [[ "$command" == python3 ]] && python3_missing=1
+  }
 done
-if [[ -z "$DESTDIR" ]]; then
-  for command in id systemctl systemd-analyze; do
+if ((live)); then
+  command -v id >/dev/null || missing+=("id")
+fi
+if ((live_sys)); then
+  for command in systemctl systemd-analyze; do
     command -v "$command" >/dev/null || missing+=("$command")
   done
+  if ! command -v systemctl >/dev/null && [[ ! -d /run/systemd/system ]]; then
+    echo "install.sh: no running systemd found — pass --no-systemd for a container or image build" >&2
+  fi
+fi
+if ((live)); then
   if ((UNINSTALL)); then
-    if [[ -f "$rp_filter_state" ]]; then
+    if ((live_sys)) && [[ -f "$rp_filter_state" ]]; then
       command -v sysctl >/dev/null || missing+=("sysctl")
     fi
   else
@@ -178,7 +213,7 @@ if [[ -z "$DESTDIR" ]]; then
       missing+=("sing-box ($SING_BOX)")
       sing_box_missing=1
     fi
-    if command -v systemctl >/dev/null && ! systemctl cat sing-box@.service >/dev/null 2>&1; then
+    if ((live_sys)) && command -v systemctl >/dev/null && ! systemctl cat sing-box@.service >/dev/null 2>&1; then
       missing+=("sing-box@.service")
       sing_box_missing=1
     fi
@@ -186,7 +221,7 @@ if [[ -z "$DESTDIR" ]]; then
       missing+=("sing-box service user ($SERVICE_USER)")
       sing_box_missing=1
     fi
-    if [[ "$DISCORD_VOICE_ACTION" == enable ]]; then
+    if ((live_sys)) && [[ "$DISCORD_VOICE" == 1 ]]; then
       command -v sysctl >/dev/null || missing+=("sysctl")
     fi
     if ((${#TRUSTED_USERS[@]})); then
@@ -196,33 +231,73 @@ if [[ -z "$DESTDIR" ]]; then
 fi
 
 if ((${#missing[@]})); then
-  printf 'install.sh: missing dependencies:\n' >&2
-  printf '  - %s\n' "${missing[@]}" >&2
-  if ((sing_box_missing)); then
-    distro=""
-    if [[ -r "$OS_RELEASE" ]]; then
-      while IFS='=' read -r key value; do
-        case "$key" in
-          ID | ID_LIKE)
-            value="${value%\"}"
-            value="${value#\"}"
-            distro+=" $value"
-            ;;
-        esac
-      done <"$OS_RELEASE"
-    fi
-    case " $distro " in
-      *" arch "*)
-        printf '\nInstall sing-box on Arch/CachyOS:\n  sudo pacman -S --needed sing-box\n' >&2
-        ;;
-      *" debian "* | *" ubuntu "*)
-        printf '\nInstall sing-box from its official APT repository, then rerun this command:\n  https://sing-box.sagernet.org/installation/package-manager/#repository-installation\n' >&2
-        ;;
-      *)
-        printf '\nOfficial sing-box packages and installation instructions:\n  https://sing-box.sagernet.org/installation/package-manager/\n' >&2
-        ;;
-    esac
+  # Runnable guidance lines are printed as `  $ command` — exactly what a person types,
+  # no -y and no --noconfirm — and the distro tests run those very lines, so a typo here
+  # is a red CI run rather than a lie that keeps
+  distro=""
+  if [[ -r "$OS_RELEASE" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        ID | ID_LIKE)
+          value="${value%\"}"
+          value="${value#\"}"
+          distro+=" $value"
+          ;;
+      esac
+    done <"$OS_RELEASE"
   fi
+  {
+    printf 'install.sh: missing dependencies:\n'
+    printf '  - %s\n' "${missing[@]}"
+    if ((python3_missing)); then
+      case " $distro " in
+        *" arch "*)
+          printf '\nInstall python3 on Arch/CachyOS:\n'
+          printf '  $ sudo pacman -S --needed python\n'
+          ;;
+        *" debian "* | *" ubuntu "*)
+          printf '\nInstall python3 on Debian/Ubuntu:\n'
+          printf '  $ sudo apt-get update\n'
+          printf '  $ sudo apt-get install python3\n'
+          ;;
+        *" fedora "*)
+          printf '\nInstall python3 on Fedora:\n'
+          printf '  $ sudo dnf install python3\n'
+          ;;
+        *)
+          printf '\nInstall python3 with your package manager\n'
+          ;;
+      esac
+    fi
+    if ((sing_box_missing)); then
+      case " $distro " in
+        *" arch "*)
+          printf '\nInstall sing-box on Arch/CachyOS:\n'
+          printf '  $ sudo pacman -S --needed sing-box\n'
+          ;;
+        *" debian "* | *" ubuntu "*)
+          printf '\nInstall sing-box on Debian/Ubuntu, from its official APT repository:\n'
+          printf '  $ sudo apt-get update\n'
+          printf '  $ sudo apt-get install ca-certificates curl\n'
+          printf '  $ sudo mkdir -p /etc/apt/keyrings\n'
+          printf '  $ sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc\n'
+          printf '  $ sudo chmod a+r /etc/apt/keyrings/sagernet.asc\n'
+          printf "  \$ printf 'Types: deb\\\\nURIs: https://deb.sagernet.org/\\\\nSuites: *\\\\nComponents: *\\\\nEnabled: yes\\\\nSigned-By: /etc/apt/keyrings/sagernet.asc\\\\n' | sudo tee /etc/apt/sources.list.d/sagernet.sources\n"
+          printf '  $ sudo apt-get update\n'
+          printf '  $ sudo apt-get install sing-box\n'
+          ;;
+        *" fedora "*)
+          printf '\nInstall sing-box on Fedora, from its official DNF repository:\n'
+          printf '  $ sudo dnf config-manager addrepo --from-repofile=https://sing-box.app/sing-box.repo\n'
+          printf '  $ sudo dnf install sing-box\n'
+          ;;
+        *)
+          printf '\nOfficial sing-box packages and installation instructions:\n'
+          printf '  https://sing-box.sagernet.org/installation/package-manager/\n'
+          ;;
+      esac
+    fi
+  } >&2
   exit 1
 fi
 
@@ -230,7 +305,7 @@ disable_discord_voice_fix() {
   local previous
 
   rm -f "$sysctl_file"
-  if [[ -z "$DESTDIR" && -f "$rp_filter_state" ]]; then
+  if ((live_sys)) && [[ -f "$rp_filter_state" ]]; then
     command -v sysctl >/dev/null || {
       echo "install.sh: sysctl is required to restore the Discord voice fix" >&2
       exit 1
@@ -248,8 +323,10 @@ disable_discord_voice_fix() {
 
 if ((UNINSTALL)); then
   managed=0
-  [[ -n "$DESTDIR" || -f "$managed_state" ]] && managed=1
-  if ((managed)) && [[ -z "$DESTDIR" ]]; then
+  if ((!live)) || [[ -f "$managed_state" ]]; then
+    managed=1
+  fi
+  if ((managed && live_sys)); then
     systemctl disable --now skvpn-sync.timer >/dev/null
     systemctl disable skvpn-restore.service >/dev/null 2>&1 || true
     active_units=()
@@ -262,24 +339,36 @@ if ((UNINSTALL)); then
   fi
   if ((managed)); then
     disable_discord_voice_fix
-    rm -f \
-      "$base_config" \
-      "$extra_config" \
-      "$sing_box_dropin" \
-      "$unit_root/skvpn-restore.service" \
-      "$unit_root/skvpn-sync.service" \
-      "$unit_root/skvpn-sync.timer" \
-      "$sudoers_file" \
-      "$profile_file"
-    rmdir "$unit_root/sing-box@.service.d" 2>/dev/null || true
   fi
-  rm -f \
-    "$root/bin/skvpn" \
-    "$root/share/bash-completion/completions/skvpn" \
-    "$root/share/zsh/site-functions/_skvpn"
+  if [[ -f "$manifest_file" ]]; then
+    while IFS= read -r path; do
+      [[ -z "$path" || "$path" == \#* ]] && continue
+      rm -f "${DESTDIR%/}$path"
+    done <"$manifest_file"
+    rm -f "$manifest_file"
+  else
+    # Installs made before the manifest existed (skvpn < 1.1): the fixed list those
+    # versions wrote. Drop this arm one release after 1.1
+    if ((managed)); then
+      rm -f \
+        "$base_config" \
+        "$extra_config" \
+        "$sing_box_dropin" \
+        "$unit_root/skvpn-restore.service" \
+        "$unit_root/skvpn-sync.service" \
+        "$unit_root/skvpn-sync.timer" \
+        "$sudoers_file" \
+        "$profile_file"
+    fi
+    rm -f \
+      "$root/bin/skvpn" \
+      "$root/share/bash-completion/completions/skvpn" \
+      "$root/share/zsh/site-functions/_skvpn"
+  fi
   rm -f "$managed_state"
-  rmdir "$state_root" 2>/dev/null || true
-  if [[ -z "$DESTDIR" ]]; then
+  rmdir "$unit_root/sing-box@.service.d" "$state_root" "$root/share/skvpn" \
+    "$sysconf_root/sing-box/base.d" 2>/dev/null || true
+  if ((live_sys)); then
     systemctl daemon-reload
   fi
   echo "removed skvpn from $root and settings installed by this script"
@@ -287,7 +376,7 @@ if ((UNINSTALL)); then
 fi
 
 render_args=("${CONFIG_ARGS[@]}")
-[[ -n "$DESTDIR" ]] && render_args+=(--skip-path-check)
+((live)) || render_args+=(--skip-path-check)
 rendered_base=$(mktemp)
 temporary_files=("$rendered_base")
 cleanup() { rm -f "${temporary_files[@]}"; }
@@ -296,11 +385,11 @@ python3 "$here/non-nix/render-base.py" "${render_args[@]}" >"$rendered_base"
 if [[ -n "$EXTRA_SETTINGS" ]]; then
   python3 -c 'import json, sys; value = json.load(open(sys.argv[1])); sys.exit(0 if isinstance(value, dict) else "extra settings must be a JSON object")' "$EXTRA_SETTINGS"
 fi
-if [[ -z "$DESTDIR" ]]; then
+if ((live_sys)); then
   systemd-analyze calendar "$SYNC_INTERVAL" >/dev/null
 fi
 previous_rp_filter=""
-if [[ "$DISCORD_VOICE_ACTION" == enable && -z "$DESTDIR" ]]; then
+if [[ "$DISCORD_VOICE" == 1 ]] && ((live_sys)); then
   if [[ ! -f "$rp_filter_state" ]]; then
     previous_rp_filter=$(sysctl -n net.ipv4.conf.all.rp_filter)
     [[ "$previous_rp_filter" =~ ^[012]$ ]] || {
@@ -318,7 +407,7 @@ if ((${#TRUSTED_USERS[@]})); then
       echo "install.sh: invalid trusted user: $user" >&2
       exit 1
     }
-    if [[ -z "$DESTDIR" ]]; then
+    if ((live)); then
       id -u "$user" >/dev/null 2>&1 || {
         echo "install.sh: no such trusted user: $user" >&2
         exit 1
@@ -326,13 +415,13 @@ if ((${#TRUSTED_USERS[@]})); then
     fi
     printf '%s ALL=(root) NOPASSWD: %s\n' "$user" "$skvpn_bin" >>"$rendered_sudoers"
   done
-  if [[ -z "$DESTDIR" ]]; then
+  if ((live)); then
     chmod 600 "$rendered_sudoers"
     visudo -cf "$rendered_sudoers" >/dev/null
   fi
 fi
 
-if [[ -z "$DESTDIR" && ! -f "$managed_state" ]]; then
+if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
   managed_paths=(
     "$base_config" "$extra_config" "$sing_box_dropin"
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
@@ -347,19 +436,32 @@ if [[ -z "$DESTDIR" && ! -f "$managed_state" ]]; then
   install -Dm600 /dev/null "$managed_state"
 fi
 
+# Every file the install writes lands in the manifest as its final runtime path (no
+# DESTDIR), so --uninstall — including one against the same staging tree — removes
+# exactly what was written and nothing it does not own
+installed=()
+rec() { installed+=("${1#"${DESTDIR%/}"}"); }
+
 install -Dm755 "$here/skvpn.py" "$root/bin/skvpn"
+rec "$root/bin/skvpn"
 install -Dm644 "$here/completions/skvpn.bash" "$root/share/bash-completion/completions/skvpn"
+rec "$root/share/bash-completion/completions/skvpn"
 install -Dm644 "$here/completions/_skvpn" "$root/share/zsh/site-functions/_skvpn"
+rec "$root/share/zsh/site-functions/_skvpn"
+install -Dm644 "$here/VERSION" "$root/share/skvpn/VERSION"
+rec "$root/share/skvpn/VERSION"
 install -Dm644 "$rendered_base" "$base_config"
+rec "$base_config"
 rm -f "$rendered_base"
 
 if [[ -n "$EXTRA_SETTINGS" ]]; then
   install -Dm644 "$EXTRA_SETTINGS" "$extra_config"
+  rec "$extra_config"
 else
   rm -f "$extra_config"
 fi
 
-if [[ -z "$DESTDIR" ]]; then
+if ((live)); then
   install -d -m"$PROFILES_MODE" -o "$PROFILES_OWNER" -g "$SERVICE_GROUP" "$profiles_dir"
   shopt -s nullglob
   profiles=("$profiles_dir"/*.json)
@@ -378,6 +480,7 @@ install -Dm644 /dev/stdin "$sing_box_dropin" <<EOF
 ExecStart=
 ExecStart=$SING_BOX -D $LOCALSTATEDIR/lib/sing-box-%i -C $SYSCONFDIR/sing-box/base.d -c $SYSCONFDIR/sing-box/profiles/%i.json run
 EOF
+rec "$sing_box_dropin"
 
 if ((RESTORE)); then
   install -Dm644 /dev/stdin "$unit_root/skvpn-restore.service" <<EOF
@@ -394,9 +497,10 @@ ExecStart=$skvpn_bin restore
 [Install]
 WantedBy=multi-user.target
 EOF
+  rec "$unit_root/skvpn-restore.service"
 
 else
-  if [[ -z "$DESTDIR" ]]; then
+  if ((live_sys)); then
     systemctl disable --now skvpn-restore.service >/dev/null 2>&1 || true
   fi
   rm -f "$unit_root/skvpn-restore.service"
@@ -412,6 +516,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$skvpn_bin sub sync --if-stale
 EOF
+rec "$unit_root/skvpn-sync.service"
 
 install -Dm644 /dev/stdin "$unit_root/skvpn-sync.timer" <<EOF
 [Unit]
@@ -425,12 +530,15 @@ RandomizedDelaySec=1h
 [Install]
 WantedBy=timers.target
 EOF
+rec "$unit_root/skvpn-sync.timer"
 
 if ((${#TRUSTED_USERS[@]})); then
   install -Dm440 "$rendered_sudoers" "$sudoers_file"
+  rec "$sudoers_file"
   install -Dm644 /dev/stdin "$profile_file" <<'EOF'
 alias skvpn='sudo skvpn'
 EOF
+  rec "$profile_file"
 else
   rm -f "$sudoers_file" "$profile_file"
 fi
@@ -438,8 +546,8 @@ fi
 cleanup
 trap - EXIT
 
-if [[ "$DISCORD_VOICE_ACTION" == enable ]]; then
-  if [[ -z "$DESTDIR" ]]; then
+if [[ "$DISCORD_VOICE" == 1 ]]; then
+  if ((live_sys)); then
     if [[ ! -f "$rp_filter_state" ]]; then
       install -Dm600 /dev/stdin "$rp_filter_state" <<<"$previous_rp_filter"
     fi
@@ -449,15 +557,21 @@ if [[ "$DISCORD_VOICE_ACTION" == enable ]]; then
 # TUN replies use an asymmetric return path; strict filtering drops tunnelled UDP
 net.ipv4.conf.all.rp_filter = 2
 EOF
+  rec "$sysctl_file"
 
-  if [[ -z "$DESTDIR" ]]; then
+  if ((live_sys)); then
     sysctl -q -p "$sysctl_file"
   fi
-elif [[ "$DISCORD_VOICE_ACTION" == disable ]]; then
+else
   disable_discord_voice_fix
 fi
 
-if [[ -z "$DESTDIR" ]]; then
+{
+  echo "# skvpn $VERSION install manifest"
+  printf '%s\n' "${installed[@]}"
+} >"$manifest_file"
+
+if ((live_sys)); then
   systemctl daemon-reload
   if ((RESTORE)); then
     systemctl enable skvpn-restore.service >/dev/null
@@ -468,4 +582,4 @@ if [[ -z "$DESTDIR" ]]; then
   systemctl try-restart 'sing-box@*.service'
 fi
 
-echo "installed to $root/bin/skvpn with completions under $root/share"
+echo "installed skvpn $VERSION to $root/bin/skvpn with completions under $root/share"
