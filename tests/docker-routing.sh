@@ -75,6 +75,24 @@ done
   exit 1
 }
 
+for _ in {1..50}; do
+  if "$NFT" list chain inet sing-box prerouting >/dev/null 2>&1 &&
+    "$NFT" list chain inet sing-box prerouting_udp_icmp >/dev/null 2>&1; then
+    break
+  fi
+  kill -0 "$sing_box_pid" 2>/dev/null || {
+    cat "$tmp/sing-box.log" >&2
+    exit 1
+  }
+  sleep 0.1
+done
+if ! "$NFT" list chain inet sing-box prerouting >/dev/null 2>&1 ||
+  ! "$NFT" list chain inet sing-box prerouting_udp_icmp >/dev/null 2>&1; then
+  cat "$tmp/sing-box.log" >&2
+  echo "docker-routing: sing-box nftables chains did not appear" >&2
+  exit 1
+fi
+
 cat >"$tmp/docker-bypass.nft" <<'EOF'
 insert rule inet sing-box prerouting iifname "br-*" return comment "skvpn: bypass Docker bridges"
 insert rule inet sing-box prerouting_udp_icmp iifname "br-*" return comment "skvpn: bypass Docker bridges"
@@ -84,7 +102,7 @@ EOF
 # Created after sing-box starts: no static interface-name list can know this br-* name.
 docker network create --subnet 10.250.1.0/24 "$network" >/dev/null
 
-docker run --name "$network-container" --network "$network" ubuntu:latest bash -euc '
+docker run --name "$network-container" --network "$network" --dns 1.1.1.1 ubuntu:latest bash -euc '
   for attempt in 1 2; do
     rm -rf /var/lib/apt/lists/* /tmp/ca-certificates_*.deb
     if apt-get update && cd /tmp && apt-get download ca-certificates &&

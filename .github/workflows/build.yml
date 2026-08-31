@@ -69,5 +69,5 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Docker bridge reaches Ubuntu repositories through the TUN
         run: |
-          nix shell nixpkgs#sing-box nixpkgs#nftables -c bash -c \
+          nix develop .#ci-docker-routing --no-write-lock-file -c bash -c \
             'sudo env SING_BOX="$(command -v sing-box)" NFT="$(command -v nft)" bash tests/docker-routing.sh'

@@ -327,6 +327,12 @@
             shfmt
           ];
         };
+        ci-docker-routing = pkgs.mkShell {
+          packages = with pkgs; [
+            nftables
+            sing-box
+          ];
+        };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
