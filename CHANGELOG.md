@@ -15,6 +15,9 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - `--no-systemd`: a real install that skips every live `systemctl` and `sysctl` call, for containers and image builds without PID 1 systemd
 - tab completion for `install.sh` itself (`source completions/install.sh.bash` or `.zsh`), with a drift check that fails the lint when a flag exists in only one of the three places
 - distro tests: `tests/distro.sh` installs for real, as root, in `debian`/`ubuntu`/`archlinux`/`fedora` `:latest` containers by running the preflight's own printed guidance, then exercises the CLI and uninstalls by the manifest; CI runs them on every push to master and weekly, never on pull requests, with one README badge per distribution
+- `tun.stack` and `--stack`: choose the TUN's TCP/IP stack
+- `tun.ipv6` and `--no-ipv6`: drop the TUN's v6 address on a host with no IPv6 upstream, where `auto_route` otherwise installs a v6 default route to nowhere and whatever reaches for v6 first waits on it
+- `up` and `status` name a system proxy when they find one: a TUN never sees what an application hands to a local proxy instead, so a leftover proxy from another client silently keeps the browser and every Electron app off the tunnel
 
 ### Changed
 

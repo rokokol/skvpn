@@ -79,6 +79,10 @@ let
       enable = true;
       tailscale.enable = true;
       docker.enable = true;
+      tun = {
+        ipv6 = false;
+        stack = "gvisor";
+      };
       direct = {
         zones = [
           ".ru"

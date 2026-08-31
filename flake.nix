@@ -176,6 +176,8 @@
                 want '.base | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "rule-set files are not store paths"
                 want '.base | fromjson | .inbounds[0].route_exclude_address == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]' "the tailnet is not excluded"
                 want '.base | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "the docker bridge is not excluded"
+                want '.base | fromjson | .inbounds[0].stack == "gvisor"' "the TUN stack never reached the inbound"
+                want '.base | fromjson | .inbounds[0].address == ["172.19.0.1/30"]' "ipv6 = false still gave the TUN a v6 address"
                 want '.base | fromjson | .route.final == "proxy"' "the default route is not the tunnel"
                 want '.extra | fromjson | .log.level == "debug"' "extraSettings never reached base.d"
                 want '.timerInterval == "weekly"' "the sync interval never reached the timer"
@@ -198,6 +200,8 @@
                 want '.bareBase | fromjson | .route.rules | length == 3' "a route rule appeared out of thin air"
                 want '.bareBase | fromjson | .inbounds[0] | has("route_exclude_address") | not' "a tailnet exclusion appeared without Tailscale"
                 want '.bareBase | fromjson | .inbounds[0] | has("exclude_interface") | not' "a docker exclusion appeared without docker"
+                want '.bareBase | fromjson | .inbounds[0].stack == "mixed"' "the default TUN stack is not sing-box's own"
+                want '.bareBase | fromjson | .inbounds[0].address == ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]' "the default TUN lost an address"
                 want '.bareEtc == ["sing-box/base.d/00-base.json"]' "an empty extraSettings still wrote a file"
                 want '.bareAliases == {}' "an alias appeared without trustedUsers"
 
