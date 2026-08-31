@@ -247,11 +247,11 @@ in
           "gvisor"
           "mixed"
         ];
-        default = "mixed";
+        default = "system";
         description = ''
-          The TCP/IP stack behind the TUN. `mixed` is sing-box's own default — gVisor for TCP,
-          the host stack for UDP; `system` hands both to the host, which is lighter but the
-          more fragile of the two under many parallel connections
+          The TCP/IP stack behind the TUN. `system` handles TCP and UDP with the host stack;
+          `mixed` uses the host stack for TCP and gVisor for UDP; `gvisor` handles both in
+          userspace
         '';
       };
     };

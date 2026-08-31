@@ -24,6 +24,8 @@ _install_sh_skvpn() {
     '*--direct-geoip[add a local address rule-set]:tag=path:' \
     '--tun-interface[TUN interface name]:name:' \
     '*--tun-address[TUN address]:cidr:' \
+    '--stack[TUN stack]:stack:(system gvisor mixed)' \
+    '--no-ipv6[give the TUN no IPv6 address]' \
     '--dns-server[DNS-over-TLS server through the proxy]:address:' \
     '--extra-settings[append a sing-box base.d JSON file]:file:_files' \
     '--no-restore[do not restore the active profile on boot]' \

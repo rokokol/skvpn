@@ -56,7 +56,7 @@ parser.add_argument("--direct-geoip", action="append", type=tagged_path, default
 parser.add_argument("--tun-interface", default="skvpn-tun")
 parser.add_argument("--tun-address", action="append")
 parser.add_argument("--dns-server", default="8.8.8.8")
-parser.add_argument("--stack", choices=("system", "gvisor", "mixed"), default="mixed")
+parser.add_argument("--stack", choices=("system", "gvisor", "mixed"), default="system")
 parser.add_argument("--no-ipv6", dest="ipv6", action="store_false")
 parser.add_argument("--rule-set-dir", default="/usr/share/sing-box/rule-set")
 parser.add_argument("--skip-path-check", action="store_true")

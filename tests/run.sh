@@ -188,16 +188,6 @@ else
   fail "up did not start the unit or remember the choice"
 fi
 
-world up-warns-about-a-system-proxy
-sv add "$HY2" >/dev/null
-mkdir -p "$SKVPN_ROOT/etc"
-printf 'https_proxy=http://127.0.0.1:12334\n' >"$SKVPN_ROOT/etc/environment"
-if sv up HY2 | grep -q 'system proxy'; then
-  ok
-else
-  fail "up started a tunnel over a system proxy without saying so"
-fi
-
 world up-refuses-an-unknown-profile
 if sv up nope >/dev/null 2>&1; then
   fail "starting a profile that does not exist was allowed"
@@ -452,7 +442,7 @@ fi
 world installer-drops-the-tun-ipv6-address
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --no-ipv6 >/dev/null
 base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
-if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "mixed"' \
+if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "system"' \
   "$base" >/dev/null; then
   ok
 else

@@ -200,7 +200,7 @@
                 want '.bareBase | fromjson | .route.rules | length == 3' "a route rule appeared out of thin air"
                 want '.bareBase | fromjson | .inbounds[0] | has("route_exclude_address") | not' "a tailnet exclusion appeared without Tailscale"
                 want '.bareBase | fromjson | .inbounds[0] | has("exclude_interface") | not' "a docker exclusion appeared without docker"
-                want '.bareBase | fromjson | .inbounds[0].stack == "mixed"' "the default TUN stack is not sing-box's own"
+                want '.bareBase | fromjson | .inbounds[0].stack == "system"' "the default TUN stack drifted"
                 want '.bareBase | fromjson | .inbounds[0].address == ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]' "the default TUN lost an address"
                 want '.bareEtc == ["sing-box/base.d/00-base.json"]' "an empty extraSettings still wrote a file"
                 want '.bareAliases == {}' "an alias appeared without trustedUsers"

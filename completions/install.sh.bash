@@ -16,7 +16,7 @@ _install_sh_skvpn() {
     --fix-discord-voice --tailscale --docker
     --direct-russia --direct-china --direct-iran
     --direct-zone --direct-geosite --direct-geoip
-    --tun-interface --tun-address --dns-server
+    --tun-interface --tun-address --stack --no-ipv6 --dns-server
     --extra-settings --no-restore --sync-interval --trusted-user
   )
 
@@ -35,7 +35,7 @@ _install_sh_skvpn() {
       mapfile -t COMPREPLY < <(compgen -u -- "$cur")
       return
       ;;
-    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --sync-interval)
+    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --stack | --dns-server | --sync-interval)
       COMPREPLY=()
       return
       ;;

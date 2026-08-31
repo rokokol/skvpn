@@ -27,8 +27,6 @@ STAMP = ROOT / "var/lib/skvpn/last-sync"
 ACTIVE = ROOT / "var/lib/skvpn/active"
 UNIT = "sing-box@{}.service"
 MAX_AGE = 24 * 3600
-ENVIRONMENT = ROOT / "etc/environment"
-PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy")
 
 # Cloudflare's bot rules answer 403 to the stock Python-urllib agent
 USER_AGENT = "skvpn/1"
@@ -99,31 +97,6 @@ def running():
         if unit.startswith("sing-box@") and unit.endswith(".service"):
             return unit.removeprefix("sing-box@").removesuffix(".service")
     return None
-
-
-def warn_system_proxy():
-    """A TUN carries what the kernel routes; it never sees what an application hands to a
-    local proxy instead. A system proxy left behind by another client is therefore silent and
-    total — the browser and every Electron app keep using it while the tunnel looks up — so
-    name it here rather than let it be found one broken application at a time."""
-    found = []
-    for name in PROXY_VARS:
-        for key in (name, name.upper()):
-            if os.environ.get(key):
-                found.append(f"{key}={os.environ[key]}")
-    try:
-        for line in ENVIRONMENT.read_text().splitlines():
-            setting = line.strip()
-            if setting.split("=")[0].lower() in PROXY_VARS:
-                found.append(f"{setting} in {ENVIRONMENT}")
-    except OSError:
-        pass
-
-    if not found:
-        return
-    print("  !  a system proxy is set — the tunnel cannot capture what goes through it")
-    for setting in found:
-        print(f"     {setting}")
 
 
 # --- URI → sing-box outbound ------------------------------------------------
@@ -433,7 +406,6 @@ def cmd_up(args):
     ACTIVE.parent.mkdir(parents=True, exist_ok=True)
     ACTIVE.write_text(name + "\n")
     print(f"  →  {name}")
-    warn_system_proxy()
 
 
 def cmd_down(_args):
@@ -465,7 +437,6 @@ def cmd_status(_args):
     if STAMP.exists():
         age = int((time.time() - STAMP.stat().st_mtime) / 60)
         print(f"  synced    {age} min ago")
-    warn_system_proxy()
 
 
 def version():
