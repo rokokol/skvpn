@@ -59,3 +59,15 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
       - run: nix build --no-write-lock-file .#checks.x86_64-linux.scripts-lint
+
+  docker-routing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: cachix/install-nix-action@v31
+      - name: Docker bridge reaches Ubuntu repositories through the TUN
+        run: |
+          nix shell nixpkgs#sing-box nixpkgs#nftables -c bash -c \
+            'sudo env SING_BOX="$(command -v sing-box)" NFT="$(command -v nft)" bash tests/docker-routing.sh'

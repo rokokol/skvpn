@@ -161,8 +161,8 @@
                 # module-test.nix would otherwise surface as a stray failure in whichever
                 # check read the key first — and jq answers 0 for the length of a missing one
                 want 'keys == [
-                  "aliases", "bareAliases", "bareBase", "bareEtc", "base", "extra",
-                  "firewall", "offAliases", "offEtc", "offFirewall", "offPackages",
+                  "aliases", "bareAliases", "bareBase", "bareEtc", "base", "dockerPostStart",
+                  "extra", "firewall", "offAliases", "offEtc", "offFirewall", "offPackages",
                   "offServices", "offSudoRules", "offTmpfiles", "offUsers", "packages",
                   "presetsBase", "restoreOffServices", "services", "sudoRules",
                   "timerInterval", "tmpfiles", "users"
@@ -176,6 +176,7 @@
                 want '.base | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "rule-set files are not store paths"
                 want '.base | fromjson | .inbounds[0].route_exclude_address == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]' "the tailnet is not excluded"
                 want '.base | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "the docker bridge is not excluded"
+                want '.dockerPostStart | contains("iifname \"br-*\"")' "dynamic Docker bridges are not excluded"
                 want '.base | fromjson | .inbounds[0].stack == "gvisor"' "the TUN stack never reached the inbound"
                 want '.base | fromjson | .inbounds[0].address == ["172.19.0.1/30"]' "ipv6 = false still gave the TUN a v6 address"
                 want '.base | fromjson | .route.final == "proxy"' "the default route is not the tunnel"
@@ -259,6 +260,7 @@
                 want '.enabledBase | fromjson | .route.final == "proxy"' "the base did not survive the real module set"
                 want '.enabledBase | fromjson | .inbounds[0].route_exclude_address | length == 2' "the tailnet exclusion did not survive"
                 want '.dockerFollowBase | fromjson | .inbounds[0].route_exclude_address == ["10.42.0.0/16"]' "docker address pools did not follow the host docker settings"
+                want '.dockerFollowBase | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "docker default bridge is not excluded"
                 want '.enabledExtra | fromjson | .log.level == "debug"' "extraSettings did not survive"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"
@@ -295,7 +297,7 @@
                 ];
               }
               ''
-                files="${installer} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/check-completions.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash"
+                files="${installer} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/docker-routing.sh ${testsDir}/check-completions.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash"
                 # shellcheck disable=SC2086
                 shellcheck $files
                 # shellcheck disable=SC2086

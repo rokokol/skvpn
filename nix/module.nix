@@ -70,6 +70,7 @@ let
   directGeoip = presetFiles "geoip" // cfg.direct.geoip;
 
   dockerSettings = config.virtualisation.docker.daemon.settings or { };
+  dockerBridge = dockerSettings.bridge or "docker0";
   dockerAddressPools =
     if cfg.docker.enable then
       map (pool: pool.base) (dockerSettings.default-address-pools or [ ])
@@ -149,9 +150,10 @@ let
         // lib.optionalAttrs (routeExcludeAddress != [ ]) {
           route_exclude_address = routeExcludeAddress;
         }
-        # Without a configured pool, only Docker's default bridge has a stable name
-        // lib.optionalAttrs (cfg.docker.enable && dockerAddressPools == [ ]) {
-          exclude_interface = [ (dockerSettings.bridge or "docker0") ];
+        # Docker's default bridge has a configured stable name; dynamically named br-*
+        # bridges are excluded in the unit's postStart nftables rules below
+        // lib.optionalAttrs cfg.docker.enable {
+          exclude_interface = [ dockerBridge ];
         }
       )
     ];
@@ -279,10 +281,10 @@ in
       default = config.virtualisation.docker.enable or false;
       defaultText = lib.literalExpression "config.virtualisation.docker.enable";
       description = ''
-        Keep Docker bridge networks out of the TUN. When Docker declares
-        `daemon.settings.default-address-pools`, their base ranges cover both the default
-        bridge and dynamically named bridges. Otherwise, fall back to the bridge from
-        `daemon.settings.bridge`, or `docker0` when it is unset
+        Keep Docker bridge networks out of the TUN. The default bridge follows
+        `daemon.settings.bridge`, or `docker0` when unset; dynamically named `br-*` bridges
+        are bypassed by nftables. Configured `daemon.settings.default-address-pools` are
+        also excluded from the TUN routes
       '';
     };
 
@@ -420,6 +422,20 @@ in
         (builtins.toJSON baseConfig)
         (builtins.toJSON cfg.extraSettings)
       ];
+
+      # sing-box only accepts exact names in exclude_interface. Docker names user-defined
+      # bridges br-<network-id>, so insert nftables wildcard returns after sing-box creates
+      # its table; these also match bridges created later without restarting the VPN
+      postStart = lib.optionalString cfg.docker.enable ''
+        for _ in {1..50}; do
+          ${pkgs.nftables}/bin/nft list chain inet sing-box prerouting >/dev/null 2>&1 && break
+          sleep 0.1
+        done
+        ${pkgs.nftables}/bin/nft -f - <<'EOF'
+        insert rule inet sing-box prerouting iifname "br-*" return comment "skvpn: bypass Docker bridges"
+        insert rule inet sing-box prerouting_udp_icmp iifname "br-*" return comment "skvpn: bypass Docker bridges"
+        EOF
+      '';
 
       serviceConfig = {
         User = "sing-box";

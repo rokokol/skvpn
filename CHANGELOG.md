@@ -6,15 +6,15 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ### Added
 
-- NixOS Docker routing now follows `virtualisation.docker.daemon.settings.default-address-pools`, covering dynamically named bridge networks instead of only `docker0`; without a pool it follows the configured default bridge name
+- NixOS Docker routing now follows the configured default bridge and address pools, and bypasses dynamically named `br-*` interfaces in nftables instead of excluding only `docker0`
 - a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice` and `--uninstall`
 - dependency preflight with installation guidance for Arch, CachyOS, Debian, Ubuntu and Fedora — every runnable step printed as a `$ command` line, and the distro suite runs exactly those lines, so the guidance cannot rot unnoticed
-- `docker.enable` and the matching installer flag `--docker`: keep the `docker0` bridge out of the TUN, following `virtualisation.docker.enable` by default the way the Tailscale exclusion follows its service
+- `docker.enable` and the matching installer flag `--docker`: keep Docker bridge traffic out of the TUN, following `virtualisation.docker.enable` by default the way the Tailscale exclusion follows its service
 - a `VERSION` file as the one place the version lives: `nix/package.nix` reads it, `skvpn --version`/`-v` and `./install.sh --version`/`-v` print it, and CI refuses a release whose `CHANGELOG.md` has no heading for it
 - `--uninstall` by manifest: the install writes `share/skvpn/install-manifest` naming every file it created, and uninstall consumes it — installs made before the manifest are still removed by the old fixed list for one release
 - `--no-systemd`: a real install that skips every live `systemctl` and `sysctl` call, for containers and image builds without PID 1 systemd
 - tab completion for `install.sh` itself (`source completions/install.sh.bash` or `.zsh`), with a drift check that fails the lint when a flag exists in only one of the three places
-- distro tests: `tests/distro.sh` installs for real, as root, in `debian`/`ubuntu`/`archlinux`/`fedora` `:latest` containers by running the preflight's own printed guidance, then exercises the CLI and uninstalls by the manifest; CI runs them on every push to master and weekly, never on pull requests, with one README badge per distribution
+- distro tests: `tests/distro.sh` installs for real, as root, in `debian`/`ubuntu`/`archlinux`/`fedora` `:latest` containers by running the preflight's own printed guidance, proves a nested Docker daemon can download from Ubuntu repositories through the active TUN, then exercises the CLI and uninstalls by the manifest; CI runs them on every push to master and weekly, never on pull requests, with one README badge per distribution
 - `tun.stack` and `--stack`: choose the TUN's TCP/IP stack, retaining `system` as the default
 - `tun.ipv6` and `--no-ipv6`: drop the TUN's v6 address on a host with no IPv6 upstream, where `auto_route` otherwise installs a v6 default route to nowhere and whatever reaches for v6 first waits on it
 

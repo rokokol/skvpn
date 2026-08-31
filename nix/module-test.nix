@@ -127,6 +127,7 @@ in
   packages = names tuned.environment.systemPackages;
   tmpfiles = tuned.systemd.tmpfiles.rules;
   services = lib.attrNames tuned.systemd.services;
+  dockerPostStart = tuned.systemd.services."sing-box@".postStart;
   timerInterval = tuned.systemd.timers.skvpn-sync.timerConfig.OnCalendar;
   firewall = tuned.networking.firewall.checkReversePath;
   users = lib.attrNames tuned.users.users;
