@@ -57,7 +57,15 @@ let
   # docker.enable defaults to following the host's own docker switch, the way
   # tailscale.enable follows services.tailscale — nothing under services.skvpn set here
   dockerFollow = evalWith {
-    virtualisation.docker.enable = true;
+    virtualisation.docker = {
+      enable = true;
+      daemon.settings.default-address-pools = [
+        {
+          base = "10.42.0.0/16";
+          size = 24;
+        }
+      ];
+    };
     services.skvpn.enable = true;
   };
 

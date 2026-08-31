@@ -254,7 +254,7 @@
                 want '.enabledBroken == []' "an enabled module breaks the system"
                 want '.enabledBase | fromjson | .route.final == "proxy"' "the base did not survive the real module set"
                 want '.enabledBase | fromjson | .inbounds[0].route_exclude_address | length == 2' "the tailnet exclusion did not survive"
-                want '.dockerFollowBase | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "docker.enable did not follow the host docker switch"
+                want '.dockerFollowBase | fromjson | .inbounds[0].route_exclude_address == ["10.42.0.0/16"]' "docker address pools did not follow the host docker settings"
                 want '.enabledExtra | fromjson | .log.level == "debug"' "extraSettings did not survive"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"

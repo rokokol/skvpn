@@ -69,6 +69,19 @@ let
   directGeosite = presetFiles "geosite" // cfg.direct.geosite;
   directGeoip = presetFiles "geoip" // cfg.direct.geoip;
 
+  dockerSettings = config.virtualisation.docker.daemon.settings or { };
+  dockerAddressPools =
+    if cfg.docker.enable then
+      map (pool: pool.base) (dockerSettings.default-address-pools or [ ])
+    else
+      [ ];
+  routeExcludeAddress =
+    lib.optionals cfg.tailscale.enable [
+      "100.64.0.0/10"
+      "fd7a:115c:a1e0::/48"
+    ]
+    ++ dockerAddressPools;
+
   # Tags double as attribute names, so a rule-set is declared exactly once; geosite first,
   # geoip second — a stable order, not an alphabetical accident
   ruleSetTags = lib.attrNames directGeosite ++ lib.attrNames directGeoip;
@@ -131,19 +144,14 @@ let
           strict_route = false;
           stack = "system";
         }
-        # A tailnet address pulled into the TUN answers over lo, and Tailscale's antispoof
-        # drops any tailnet source that did not arrive on tailscale0
-        // lib.optionalAttrs cfg.tailscale.enable {
-          route_exclude_address = [
-            "100.64.0.0/10"
-            "fd7a:115c:a1e0::/48"
-          ];
+        # Keep fixed overlay ranges out of the TUN. Tailscale owns protocol-wide ranges;
+        # Docker's configured pool covers its default and dynamically named bridges
+        // lib.optionalAttrs (routeExcludeAddress != [ ]) {
+          route_exclude_address = routeExcludeAddress;
         }
-        # Container traffic pulled into the TUN never finds its way back to the bridge;
-        # excluded by interface rather than by address, because docker's pools are
-        # host-configurable and overlap the TUN's own default subnet
-        // lib.optionalAttrs cfg.docker.enable {
-          exclude_interface = [ "docker0" ];
+        # Without a configured pool, only Docker's default bridge has a stable name
+        // lib.optionalAttrs (cfg.docker.enable && dockerAddressPools == [ ]) {
+          exclude_interface = [ (dockerSettings.bridge or "docker0") ];
         }
       )
     ];
@@ -246,9 +254,10 @@ in
       default = config.virtualisation.docker.enable or false;
       defaultText = lib.literalExpression "config.virtualisation.docker.enable";
       description = ''
-        Keep the `docker0` bridge out of the TUN. Container traffic pulled into the
-        tunnel never finds its way back to the bridge, so with both running the
-        containers lose the network unless the bridge is excluded here
+        Keep Docker bridge networks out of the TUN. When Docker declares
+        `daemon.settings.default-address-pools`, their base ranges cover both the default
+        bridge and dynamically named bridges. Otherwise, fall back to the bridge from
+        `daemon.settings.bridge`, or `docker0` when it is unset
       '';
     };
 

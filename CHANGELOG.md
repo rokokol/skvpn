@@ -6,6 +6,7 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ### Added
 
+- NixOS Docker routing now follows `virtualisation.docker.daemon.settings.default-address-pools`, covering dynamically named bridge networks instead of only `docker0`; without a pool it follows the configured default bridge name
 - a complete non-NixOS systemd installation with base config, an `ExecStart` drop-in for the package's template unit, boot restore and subscription timer; installer flags for the NixOS routing, Tailscale, TUN, DNS, extra settings and trusted-user options; idempotent `--fix-discord-voice` and `--uninstall`
 - dependency preflight with installation guidance for Arch, CachyOS, Debian, Ubuntu and Fedora — every runnable step printed as a `$ command` line, and the distro suite runs exactly those lines, so the guidance cannot rot unnoticed
 - `docker.enable` and the matching installer flag `--docker`: keep the `docker0` bridge out of the TUN, following `virtualisation.docker.enable` by default the way the Tailscale exclusion follows its service

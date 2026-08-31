@@ -98,7 +98,7 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `direct.zones` | `[ ]` | domain suffixes resolved by the local bootstrap and routed past the tunnel |
 | `direct.geosite` / `direct.geoip` | `{ }` | local binary rule-sets routed direct, keyed by tag; local on purpose — a remote set would arrive through the tunnel it is meant to steer |
 | `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges out of the TUN |
-| `docker.enable` | follows `virtualisation.docker.enable` | keep the `docker0` bridge out of the TUN — container traffic pulled into the tunnel never finds its way back to the bridge |
+| `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: use `virtualisation.docker.daemon.settings.default-address-pools` for all dynamic bridges, falling back to the configured default bridge name or `docker0` |
 | `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box `-C` semantics: objects merge, arrays append, scalars replace |
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
