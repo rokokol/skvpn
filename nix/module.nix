@@ -289,7 +289,7 @@ in
     };
 
     direct =
-      lib.mapAttrs (name: preset: {
+      lib.mapAttrs (_: preset: {
         enable = lib.mkEnableOption "" // {
           description = ''
             Route ${preset.label} destinations around the tunnel: the
