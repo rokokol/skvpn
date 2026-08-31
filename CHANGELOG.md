@@ -4,6 +4,8 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-31
+
 ### Added
 
 - NixOS Docker routing now follows the configured default bridge and address pools, and bypasses dynamically named `br-*` interfaces in nftables instead of excluding only `docker0`
