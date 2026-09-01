@@ -58,6 +58,15 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
+      # nix run/shell nixpkgs#tool is a mirror-fate lookup — whatever nixpkgs the runner
+      # resolves today decides the job. Tools a workflow needs live in the flake's dev
+      # shell, pinned by the lock, reached with nix develop
+      - name: CI tools come from the lock, not the registry
+        run: |
+          if grep -rEn 'nix (run|shell) nixpkgs#' .github/workflows; then
+            echo "unpinned registry lookup in a workflow — pin the tool in the flake's dev shell and use nix develop" >&2
+            exit 1
+          fi
       - run: nix build --no-write-lock-file .#checks.x86_64-linux.scripts-lint
 
   docker-routing:
