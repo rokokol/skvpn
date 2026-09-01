@@ -158,7 +158,7 @@ if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
   exit 1
 fi
 if ((UNINSTALL)) && {
-  ((${#CONFIG_ARGS[@]} || RESTORE == 0 || ${#TRUSTED_USERS[@]})) ||
+  ((${#CONFIG_ARGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]})) ||
     [[ -n "$EXTRA_SETTINGS" || "$SYNC_INTERVAL" != daily ]]
 }; then
   echo "install.sh: --uninstall cannot be combined with configuration options" >&2
@@ -329,7 +329,7 @@ disable_discord_voice_fix() {
 
 if ((UNINSTALL)); then
   managed=0
-  if ((live == 0)) || [[ -f "$managed_state" ]]; then
+  if ((! live)) || [[ -f "$managed_state" ]]; then
     managed=1
   fi
   if ((managed && live_sys)); then
