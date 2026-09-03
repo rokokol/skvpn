@@ -445,6 +445,36 @@ else
   fail "the refusal left a partial install, or the installer's own SING_BOX was not what a path is checked against"
 fi
 
+# A site as typed — bare, a URL, *.example.com, an IDN — lands as the suffix sing-box
+# matches on the name asked for, with its DNS steered to the bootstrap like a direct
+# zone; the base's own zones show up in ls as declared domains
+world split-domain-entries-become-direct-zones
+mkdir -p "$SKVPN_ROOT/etc/sing-box/base.d"
+printf '{"route":{"rules":[{"domain_suffix":[".ru",".su"],"outbound":"direct"}]}}\n' \
+  >"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+sv split add domain 'https://Example.com/some/path' >/dev/null
+sv split add domain '*.cdn.example.net' >/dev/null
+sv split add domain 'пример.рф' >/dev/null
+sv split add domain '.by' >/dev/null
+file=$(split_file)
+want="  domain $(printf '%-40s' .ru) declared
+  domain $(printf '%-40s' .su) declared
+  domain example.com
+  domain .cdn.example.net
+  domain xn--e1afmkfd.xn--p1ai
+  domain .by"
+if jq -e '.route.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "outbound": "direct"}]' "$file" >/dev/null &&
+  jq -e '.dns.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "server": "bootstrap"}]' "$file" >/dev/null &&
+  [[ "$(sv split ls)" == "$want" ]] &&
+  sv split rm domain example.com >/dev/null &&
+  ! sv split add domain 'not a domain' >/dev/null 2>&1 &&
+  ! sv split add domain 'localhost' >/dev/null 2>&1 &&
+  ! sv split add domain 'by' >/dev/null 2>&1; then
+  ok
+else
+  fail "a domain entry did not land as a direct zone, or ls hid the declared ones"
+fi
+
 world split-add-says-when-the-rule-counts
 out=$(sv split add firefox)
 if [[ -e $(split_file) && "$out" == *"takes effect on the next"* ]] &&
@@ -493,6 +523,25 @@ if [[ "$out" == *"HY2"*"42 ms"* && "$out" == *"TROJAN-node"*"timeout"* ]] &&
   ok
 else
   fail "the probe carried the wrong outbounds, the wrong mark, the wrong url, or left something behind"
+fi
+
+# A node's address is part of what a profile keeps private: no table carries it unless
+# asked, and the ask is the same word for ls, ping and status --ping
+world servers-show-only-when-asked
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42'
+plain_ls=$(sv ls)
+full_ls=$(sv ls --servers)
+plain_ping=$(sv ping)
+full_ping=$(sv ping --servers HY2)
+full_status=$(sv status --ping --servers)
+if [[ "$plain_ls" != *node.example.com* && "$full_ls" == *"hysteria2 "*node.example.com* &&
+  "$plain_ping" == *"HY2"*"hysteria2"*"42 ms"* && "$plain_ping" != *node.example.com* &&
+  "$full_ping" == *node.example.com*"42 ms"* && "$full_status" == *node.example.com*"42 ms"* ]] &&
+  ! sv status --servers >/dev/null 2>&1; then
+  ok
+else
+  fail "a server showed without --servers, or stayed hidden with it"
 fi
 
 world ping-names-only-the-asked-profiles
@@ -762,6 +811,7 @@ printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
   --split path /usr/bin/steam \
   --split ip 10.0.0.0/8 \
   --split name ip \
+  --split domain 'https://Example.com/x' \
   --extra-settings "$SKVPN_ROOT/extra.json" \
   --no-restore \
   --sync-interval weekly \
@@ -775,6 +825,8 @@ if jq -e '
 ' "$base" >/dev/null &&
   jq -e '.dns.servers[1].server == "1.1.1.1"' "$base" >/dev/null &&
   jq -e '.route.rules | any(.domain_suffix? | index(".ru"))' "$base" >/dev/null &&
+  jq -e '.route.rules | any(.domain_suffix? | index("example.com"))' "$base" >/dev/null &&
+  jq -e '.dns.rules | any(.domain_suffix? | index("example.com"))' "$base" >/dev/null &&
   jq -e '.route.rules[-3] == {"process_name": ["firefox", "ip"], "outbound": "direct"}' "$base" >/dev/null &&
   jq -e '.route.rules[-2] == {"process_path": ["/usr/bin/steam"], "outbound": "direct"}' "$base" >/dev/null &&
   jq -e '.route.rules[-1] == {"ip_cidr": ["10.0.0.0/8"], "outbound": "direct"}' "$base" >/dev/null &&

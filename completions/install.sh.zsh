@@ -22,7 +22,7 @@ _install_sh_skvpn() {
     '*--direct-zone[route an additional domain suffix directly]:suffix:' \
     '*--direct-geosite[add a local domain rule-set]:tag=path:' \
     '*--direct-geoip[add a local address rule-set]:tag=path:' \
-    '*--split[route a process, executable or CIDR around the tunnel]:kind or value:(name path ip)' \
+    '*--split[route a process, executable, CIDR or site around the tunnel]:kind or value:(name path ip domain)' \
     '--tun-interface[TUN interface name]:name:' \
     '*--tun-address[TUN address]:cidr:' \
     '--stack[TUN stack]:stack:(system gvisor mixed)' \

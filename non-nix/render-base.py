@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 PRESETS = {
@@ -62,6 +63,32 @@ def absolute_path(value):
     return value
 
 
+def domain(value):
+    """A site as typed — a bare name, a URL, `*.example.com` — as a domain suffix;
+    the same normalisation skvpn.py makes for `split add domain`"""
+    if "://" in value:
+        value = urlparse(value).hostname or ""
+    value = value.strip().rstrip("/").lower()
+    if value.startswith("*."):
+        value = value[1:]
+    dotted = value.startswith(".")
+    try:
+        labels = [
+            label.encode("idna").decode() for label in value.lstrip(".").split(".")
+        ]
+    except UnicodeError as error:
+        raise argparse.ArgumentTypeError(f"not a domain: {value}") from error
+    value = ("." if dotted else "") + ".".join(labels)
+    # A whole zone is written with its dot, `.ru`; a bare single label is a host name
+    zone = r"\.[a-z0-9-]+(\.[a-z0-9-]+)*"
+    host = r"[a-z0-9-]+(\.[a-z0-9-]+)+"
+    if not re.fullmatch(f"{zone}|{host}", value):
+        raise argparse.ArgumentTypeError(
+            f"not a domain — a whole zone is written with its dot, like .ru: {value}"
+        )
+    return value
+
+
 def is_glob(value):
     return "*" in value or "?" in value
 
@@ -103,6 +130,8 @@ parser.add_argument("--direct-geoip", action="append", type=tagged_path, default
 parser.add_argument("--split-name", action="append", default=[])
 parser.add_argument("--split-path", action="append", type=absolute_path, default=[])
 parser.add_argument("--split-ip", action="append", type=cidr, default=[])
+# A direct zone with the CLI's normalisation: a URL or *.example.com is fine here
+parser.add_argument("--split-domain", action="append", type=domain, default=[])
 # Where install.sh found sing-box: what a split entry must not name
 parser.add_argument("--sing-box", dest="sing_box", default="/usr/bin/sing-box")
 parser.add_argument("--tun-interface", default="skvpn-tun")
@@ -122,7 +151,7 @@ for kind, values in (("name", args.split_name), ("path", args.split_path)):
                 "never enters the tunnel, and a pattern that wide catches everything"
             )
 
-zones = list(args.direct_zone)
+zones = list(args.direct_zone) + list(args.split_domain)
 geosite = {}
 geoip = {}
 for name in args.preset:

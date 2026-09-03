@@ -36,7 +36,7 @@ _install_sh_skvpn() {
       return
       ;;
     --split)
-      mapfile -t COMPREPLY < <(compgen -W "name path ip" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "name path ip domain" -- "$cur")
       return
       ;;
     --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --stack | --dns-server | --sync-interval)

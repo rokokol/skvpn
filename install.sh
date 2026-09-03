@@ -59,11 +59,13 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
                        add a local domain rule-set; repeatable
   --direct-geoip TAG=PATH
                        add a local address rule-set; repeatable
-  --split [KIND] VALUE route a process around the tunnel: KIND is name (the default),
-                       path (an absolute executable path) or ip (an address or CIDR);
-                       repeatable. name and path take wildcards: * one path segment,
-                       ** any run, ? one character. A process literally called ip,
-                       path or name is spelled --split name ip
+  --split [KIND] VALUE route a process or site around the tunnel: KIND is name (the
+                       default), path (an absolute executable path), ip (an address
+                       or CIDR) or domain (a site — a bare name, a URL or
+                       *.example.com; the same rule as --direct-zone); repeatable.
+                       name and path take wildcards: * one path segment, ** any run,
+                       ? one character. A process literally called ip, path, name
+                       or domain is spelled --split name ip
   --tun-interface NAME TUN interface name (default: skvpn-tun)
   --tun-address CIDR   TUN address; repeatable, replaces both defaults
   --stack NAME         TUN stack: system, gvisor or mixed (default: system)
@@ -128,7 +130,7 @@ while [[ $# -gt 0 ]]; do
     --split)
       # A kind word is consumed only when a value follows it; the bare word is the value
       case "${2:-}" in
-        name | path | ip)
+        name | path | ip | domain)
           CONFIG_ARGS+=("--split-$2" "${3:?value required by --split $2}")
           shift 3
           ;;

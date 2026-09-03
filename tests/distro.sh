@@ -30,7 +30,7 @@ declare -A IMAGE=(
 # declared layer of the split test below: curl goes direct by process name, and the
 # path wildcard and the CIDR are there for the installed sing-box to accept — a field
 # the distribution's build does not know would refuse the whole base
-INSTALL_FLAGS=(--no-systemd --docker --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16)
+INSTALL_FLAGS=(--no-systemd --docker --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
 UNINSTALL_FLAGS=(--no-systemd)
 
 # Bootstrap: only what the harness itself needs in a minimal image — never a dependency
@@ -69,11 +69,14 @@ rules = base["route"]["rules"]
 assert {"process_name": ["curl"], "outbound": "direct"} in rules, rules
 assert {"process_path_regex": ["^/opt/[^/]*/bin/tor$"], "outbound": "direct"} in rules, rules
 assert {"ip_cidr": ["10.99.0.0/16"], "outbound": "direct"} in rules, rules
+assert {"domain_suffix": ["ubuntu.com"], "outbound": "direct"} in rules, rules
 assert {"process_name": ["curl"], "server": "bootstrap"} in base["dns"]["rules"]
+assert {"domain_suffix": ["ubuntu.com"], "server": "bootstrap"} in base["dns"]["rules"]
 EOF
   # The declared list is what `split ls` reads back, marked as not its own
   "$prefix/bin/skvpn" split ls | grep -qE '^  name +curl +declared$'
   "$prefix/bin/skvpn" split ls | grep -qE '^  path +/opt/\*/bin/tor +declared$'
+  "$prefix/bin/skvpn" split ls | grep -qE '^  domain +ubuntu\.com +declared$'
   test -f /etc/systemd/system/sing-box@.service.d/skvpn.conf
 }
 
@@ -92,21 +95,29 @@ split_setup() {
 }
 
 # With the proxy outbound blocking, the only way out is a split rule. curl carries the
-# declared name rule, python3 the imperative path rule, and bash — unlisted, by IP so no
-# DNS is involved — has to get no answer, or the two above passed for the wrong reason.
+# declared name rule, python3 the imperative path rule, and bash — unlisted — proves
+# the domain rule: the same request gets an answer from archive.ubuntu.com, a split
+# domain, and none from 1.1.1.1 by address, or the rest passed for the wrong reason.
 # Connecting is not the test: auto_redirect has the kernel accept the connection for
-# sing-box before any rule runs, and the block only closes it afterwards — so the control
-# asks for a response line and must not get one
+# sing-box before any rule runs, and the block only closes it afterwards — so the
+# control asks for a response line
 split_smoke() {
   timeout 30 curl -fsSI http://archive.ubuntu.com/ >/dev/null ||
     timeout 30 curl -fsSI http://archive.ubuntu.com/ >/dev/null
   timeout 30 python3 -c 'import urllib.request; urllib.request.urlopen("http://archive.ubuntu.com/", timeout=20).read(1)'
   # shellcheck disable=SC2016 # the inner bash expands $line, this one must not
-  if timeout 15 bash -c '
-    exec 3<>/dev/tcp/1.1.1.1/80 || exit 1
-    printf "HEAD / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n" >&3
-    read -t 10 -r line <&3 && [[ -n "$line" ]]
-  ' 2>/dev/null; then
+  bash_head() {
+    timeout 15 bash -c '
+      exec 3<>"/dev/tcp/$1/80" || exit 1
+      printf "HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n" "$1" >&3
+      read -t 10 -r line <&3 && [[ -n "$line" ]]
+    ' _ "$1" 2>/dev/null
+  }
+  bash_head archive.ubuntu.com || bash_head archive.ubuntu.com || {
+    echo "  !! an unlisted process got no answer from a split domain" >&2
+    return 1
+  }
+  if bash_head 1.1.1.1; then
     echo "  !! an unlisted process got an answer past the blocking outbound" >&2
     return 1
   fi

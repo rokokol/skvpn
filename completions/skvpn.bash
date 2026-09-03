@@ -22,29 +22,31 @@ _skvpn() {
       ;;
     ping)
       if ((COMP_CWORD == 2)); then
-        mapfile -t COMPREPLY < <(compgen -W "set $(skvpn ls --names 2>/dev/null)" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "set --servers $(skvpn ls --names 2>/dev/null)" -- "$cur")
       else
-        mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null)" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "--servers $(skvpn ls --names 2>/dev/null)" -- "$cur")
       fi
       ;;
     status)
       if ((COMP_CWORD == 2)); then
         mapfile -t COMPREPLY < <(compgen -W "--ping" -- "$cur")
+      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == --ping ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "--servers" -- "$cur")
       fi
       ;;
     split)
       if ((COMP_CWORD == 2)); then
         mapfile -t COMPREPLY < <(compgen -W "ls add rm" -- "$cur")
       elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == add ]]; then
-        mapfile -t COMPREPLY < <(compgen -W "name path ip" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "name path ip domain" -- "$cur")
       elif ((COMP_CWORD >= 3)) && [[ ${COMP_WORDS[2]} == rm ]]; then
         # What rm can take: the kinds, then the entries of the kind named (name when
         # none is) — from the list itself, minus the declared ones rm cannot touch
         local kind=name
         case "${COMP_WORDS[3]-}" in
-          name | path | ip) kind=${COMP_WORDS[3]} ;;
+          name | path | ip | domain) kind=${COMP_WORDS[3]} ;;
         esac
-        mapfile -t COMPREPLY < <(compgen -W "$( ((COMP_CWORD == 3)) && printf 'name path ip\n')
+        mapfile -t COMPREPLY < <(compgen -W "$( ((COMP_CWORD == 3)) && printf 'name path ip domain\n')
           $(skvpn split ls 2>/dev/null | awk -v kind="$kind" '$1 == kind && $NF != "declared" { print $2 }')" -- "$cur")
       fi
       ;;
@@ -55,7 +57,7 @@ _skvpn() {
       ;;
     ls)
       if ((COMP_CWORD == 2)); then
-        mapfile -t COMPREPLY < <(compgen -W "--names" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "--names --servers" -- "$cur")
       fi
       ;;
   esac

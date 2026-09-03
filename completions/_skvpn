@@ -54,30 +54,33 @@ _skvpn() {
       if ((CURRENT == 3)); then
         compadd -- set
       fi
+      compadd -- --servers
       _skvpn_profiles
       ;;
     status)
       if ((CURRENT == 3)); then
         compadd -- --ping
+      elif ((CURRENT == 4)) && [[ "$words[3]" == --ping ]]; then
+        compadd -- --servers
       fi
       ;;
     split)
       if ((CURRENT == 3)); then
         local -a subcommands=(
           'ls:list the split entries'
-          'add:route a process name (default), executable path or CIDR directly'
+          'add:route a process name (default), executable path, CIDR or domain directly'
           'rm:drop split entries'
         )
         _describe -t commands 'split command' subcommands
       elif ((CURRENT == 4)) && [[ "$words[3]" == add ]]; then
-        compadd -- name path ip
+        compadd -- name path ip domain
       elif ((CURRENT >= 4)) && [[ "$words[3]" == rm ]]; then
         local kind=name
         case "$words[4]" in
-          name | path | ip) kind="$words[4]" ;;
+          name | path | ip | domain) kind="$words[4]" ;;
         esac
         if ((CURRENT == 4)); then
-          compadd -- name path ip
+          compadd -- name path ip domain
         fi
         _skvpn_split_entries "$kind"
       fi
@@ -93,7 +96,7 @@ _skvpn() {
       ;;
     ls)
       if ((CURRENT == 3)); then
-        compadd -- --names
+        compadd -- --names --servers
       fi
       ;;
   esac

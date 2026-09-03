@@ -45,18 +45,18 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn sub sync [--if-stale]` | refresh profiles from the stored subscription; `--if-stale` only after a day |
 | `skvpn add <uri>…` | add profiles from `vless://`, `hysteria2://`/`hy2://` or `trojan://` share links |
 | `skvpn rm <name>…` | delete profiles; the running one is refused |
-| `skvpn ls [--names]` | list profiles; `--names` prints bare names and needs no root |
+| `skvpn ls [--names \| --servers]` | list profiles; `--names` prints bare names and needs no root; `--servers` adds each node's address, kept out of the table otherwise |
 | `skvpn up <name>` | sync if stale, stop the active profile, start this one, remember it for boot |
 | `skvpn down` | stop the active profile and forget the boot choice |
 | `skvpn restart` | start the active profile over on the base as it is now — how a changed split list gets onto the wire |
 | `skvpn restore` | start the profile chosen for boot — the boot-time half of `up` |
 | `skvpn boot [<name> \| last]` | pin a profile for boot regardless of what is up; `last` goes back to following `up`; no argument shows the choice |
-| `skvpn split add [name\|path\|ip] <value>…` | route a process (by name, the default), an executable (absolute path) or an address/CIDR around the tunnel; asks for a `skvpn restart` |
-| `skvpn split rm [name\|path\|ip] <value>…` | drop split entries; same reminder |
+| `skvpn split add [name\|path\|ip\|domain] <value>…` | route a process (by name, the default), an executable (absolute path), an address/CIDR or a site (a bare name, a URL or `*.example.com`) around the tunnel; asks for a `skvpn restart` |
+| `skvpn split rm [name\|path\|ip\|domain] <value>…` | drop split entries; same reminder |
 | `skvpn split [ls]` | both split lists — the declared one marked `declared`, then the one `add` edits; no root |
-| `skvpn ping [<name>…]` | latency to the ping site through every profile, or the named ones, without switching: one throwaway sing-box carries them all |
+| `skvpn ping [--servers] [<name>…]` | latency to the ping site through every profile, or the named ones, without switching: one throwaway sing-box carries them all; `--servers` adds the addresses |
 | `skvpn ping set <host\|url>` | the site to reach for; a bare host becomes `https://host/`, https only — sing-box's test quietly swaps a plain-http site for its own; default `https://www.google.com/generate_204` |
-| `skvpn status --ping` | the status lines, then the ping table |
+| `skvpn status --ping [--servers]` | the status lines, then the ping table |
 | `skvpn status` | the active profile, the boot choice (only while boot restore is enabled), the age of the last sync |
 
 Everything that writes or talks to systemd needs root, and so does `ping` (it reads the profiles); `ls --names`, `status`, `split ls` and a bare `boot` do not
@@ -83,7 +83,7 @@ The unit runs `sing-box -C /etc/sing-box/base.d -c /etc/sing-box/profiles/<name>
 
 ### Split tunnelling
 
-Bypass only: a listed process name, executable path or destination address leaves around the tunnel, everything else keeps going through the proxy. sing-box cannot match a PID, so `path` is the exact knob for a binary whose process name is shared. Names and paths take wildcards — `chrom*`, `/opt/*/bin/tor`, `/nix/store/**/bin/x?` — which sing-box's exact fields cannot, so they are rendered as a regex on the executable's path (`*` one segment, `**` any run, `?` one character) and shown back as the glob. Two lists coexist — the declarative one (`split.names`/`paths`/`ips` on NixOS, `--split` for the installer) is rendered into `00-base.json`, the imperative one (`skvpn split add|rm`) into `70-split.json`, and sing-box's `-C` appends the second after the first. Process kinds also steer their DNS to the local bootstrap resolver, the way direct zones do; on a host where `systemd-resolved`'s stub answers, the resolver is the process the DNS rule sees, while the connection itself still matches and goes direct
+Bypass only: a listed process name, executable path, destination address or site leaves around the tunnel, everything else keeps going through the proxy. A `domain` entry is the same rule as `direct.zones` / `--direct-zone`, taking a bare name, a URL, `*.example.com` or a whole zone as `.ru` (`example.com` covers its subdomains too, `mail.example.com` only what sits under it): it matches the name the client asked for — sniffed or answered — never an address, so a CDN sharing its addresses with the world changes nothing; a site pulling resources from other domains needs those listed too, and an app connecting by address without a server name is not caught. sing-box cannot match a PID, so `path` is the exact knob for a binary whose process name is shared. Names and paths take wildcards — `chrom*`, `/opt/*/bin/tor`, `/nix/store/**/bin/x?` — which sing-box's exact fields cannot, so they are rendered as a regex on the executable's path (`*` one segment, `**` any run, `?` one character) and shown back as the glob. Two lists coexist — the declarative one (`split.names`/`paths`/`ips` on NixOS, `--split` for the installer) is rendered into `00-base.json`, the imperative one (`skvpn split add|rm`) into `70-split.json`, and sing-box's `-C` appends the second after the first. Process kinds also steer their DNS to the local bootstrap resolver, the way direct zones do; on a host where `systemd-resolved`'s stub answers, the resolver is the process the DNS rule sees, while the connection itself still matches and goes direct
 
 **A change needs a restart, and asks for it.** sing-box reads its routing rules only at start, and dropping the tunnel is your call: `skvpn split add`/`rm` write the file and print `<active> is still on the old rules — apply with sudo skvpn restart`; with nothing running they say the rule takes effect on the next `up`. `skvpn split ls` shows both lists, the declared one marked `declared`. Neither `--uninstall` nor a NixOS rebuild touches `70-split.json`: it is state, like the profiles
 
@@ -162,7 +162,7 @@ The Arch package supplies the binary, service user and template unit. The instal
 
 Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific guidance when anything is missing — every runnable line as `$ command`, exactly what to type; nothing is ever installed on your behalf
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set

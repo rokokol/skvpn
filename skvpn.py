@@ -34,9 +34,14 @@ BASE_D = CONF / "base.d"
 SPLIT = BASE_D / "70-split.json"
 # CLI kind → sing-box rule field; dict order is the render order. A name or path with a
 # wildcard is rendered as process_path_regex instead, see glob_regex
-SPLIT_KINDS = {"name": "process_name", "path": "process_path", "ip": "ip_cidr"}
-# What `split ls` shows, in order: the three kinds plus regexes written by hand
-SPLIT_SHOWN = ("name", "path", "regex", "ip")
+SPLIT_KINDS = {
+    "name": "process_name",
+    "path": "process_path",
+    "ip": "ip_cidr",
+    "domain": "domain_suffix",
+}
+# What `split ls` shows, in order: the kinds plus regexes written by hand
+SPLIT_SHOWN = ("name", "path", "regex", "ip", "domain")
 # What `ping` reaches for through each node
 PING_URL = CONF / "ping.url"
 DEFAULT_PING_URL = "https://www.google.com/generate_204"
@@ -275,13 +280,15 @@ def read_profile(name):
         return None
 
 
-def profile_line(name, node, active, extra=""):
-    """One row of `ls`, and of the ping table when `extra` carries the answer."""
+def profile_line(name, node, active, extra="", servers=False):
+    """One row of `ls`, and of the ping table when `extra` carries the answer. The
+    server is shown only when asked for: a node's address is part of what the profile
+    keeps private, and a table pasted somewhere should not carry it by default."""
     mark = "*" if name == active else " "
-    row = f" {mark} {name:<24} {node['type']:<10} {node.get('server', '-')}"
-    if extra:
-        row = f"{row:<70} {extra}"
-    return row
+    row = f" {mark} {name:<24} {node['type']:<10}"
+    if servers:
+        row = f"{row} {node.get('server', '-'):<32}"
+    return f"{row} {extra}".rstrip()
 
 
 # --- ping -------------------------------------------------------------------
@@ -447,7 +454,7 @@ def measure(names):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def print_pings(results):
+def print_pings(results, servers=False):
     active = running()
     for name, answer in results.items():
         node = read_profile(name) or {"type": "?"}
@@ -455,7 +462,12 @@ def print_pings(results):
             extra = f"{answer} ms"
         else:
             extra = answer or "unreachable"
-        print(profile_line(name, node, active, extra))
+        print(profile_line(name, node, active, extra, servers))
+
+
+def take_flag(args, flag):
+    """(present, args without it) — a flag that may sit anywhere among the names."""
+    return flag in args, [arg for arg in args if arg != flag]
 
 
 # --- subscription -----------------------------------------------------------
@@ -642,10 +654,11 @@ def split_save(lists):
             + lists.get("regex", []),
         ),
         ("ip_cidr", lists["ip"]),
+        ("domain_suffix", lists["domain"]),
     ]
     route = [{field: values, "outbound": "direct"} for field, values in fields if values]
-    # A bypassed process should resolve outside the tunnel too, like a direct zone;
-    # addresses have no DNS side
+    # A bypassed process or domain should resolve outside the tunnel too, like the
+    # base's direct zones; addresses have no DNS side
     dns = [
         {field: values, "server": "bootstrap"}
         for field, values in fields
@@ -677,7 +690,31 @@ def catches_sing_box(kind, value):
     return value in targets
 
 
+def domain_value(value):
+    """A site as typed — a bare name, a URL, `*.example.com` — as the domain suffix
+    sing-box matches: the name the client asked for, sniffed or answered, never an
+    address, so a CDN sharing its addresses with the world changes nothing."""
+    if "://" in value:
+        value = urlparse(value).hostname or ""
+    value = value.strip().rstrip("/").lower()
+    if value.startswith("*."):
+        value = value[1:]
+    dotted = value.startswith(".")
+    try:
+        labels = [label.encode("idna").decode() for label in value.lstrip(".").split(".")]
+    except UnicodeError:
+        die(f"not a domain: {value}")
+    value = ("." if dotted else "") + ".".join(labels)
+    # A whole zone is written with its dot, `.ru`; without one a single label is a host
+    # name, not a suffix, and is refused
+    if not re.fullmatch(r"\.[a-z0-9-]+(\.[a-z0-9-]+)*|[a-z0-9-]+(\.[a-z0-9-]+)+", value):
+        die(f"not a domain — a whole zone is written with its dot, like .ru: {value}")
+    return value
+
+
 def split_check(kind, value):
+    if kind == "domain":
+        return domain_value(value)
     if kind == "ip":
         if is_glob(value):
             die(f"addresses take a CIDR, not a wildcard: {value}")
@@ -708,7 +745,10 @@ def split_notice():
     print(f"     {active} is still on the old rules — apply with `sudo skvpn restart`")
 
 
-SPLIT_USAGE = "usage: skvpn split [ls | add [name|path|ip] <value>… | rm [name|path|ip] <value>…]"
+SPLIT_USAGE = (
+    "usage: skvpn split [ls | add [name|path|ip|domain] <value>… "
+    "| rm [name|path|ip|domain] <value>…]"
+)
 
 
 def cmd_split(args):
@@ -805,8 +845,9 @@ def cmd_ls(args):
         for name in profile_names():
             print(name)
         return
+    servers, args = take_flag(args, "--servers")
     if args:
-        die("usage: skvpn ls [--names]")
+        die("usage: skvpn ls [--names | --servers]")
     active = running()
     if not os.access(PROFILES, os.R_OK):
         die(f"cannot read {PROFILES} — try `sudo skvpn ls`")
@@ -820,7 +861,7 @@ def cmd_ls(args):
             # Named instead of a traceback
             print(f"   {name:<24} broken profile")
             continue
-        print(profile_line(name, node, active))
+        print(profile_line(name, node, active, servers=servers))
 
 
 def cmd_up(args):
@@ -917,18 +958,20 @@ def cmd_ping(args):
         write_private(PING_URL, url + "\n", 0o644)
         print(f"  stored  {url}")
         return
+    servers, args = take_flag(args, "--servers")
     names = [slug(arg) for arg in args] or profile_names()
     if not names:
         die("no profiles")
     for name in names:
         if not profile_path(name).exists():
             die(f"no such profile: {name}")
-    print_pings(measure(names))
+    print_pings(measure(names), servers)
 
 
 def cmd_status(args):
-    if args not in ([], ["--ping"]):
-        die("usage: skvpn status [--ping]")
+    servers, args = take_flag(args, "--servers")
+    if args not in ([], ["--ping"]) or (servers and not args):
+        die("usage: skvpn status [--ping [--servers]]")
     if args:
         need_root()
     active = running()
@@ -941,7 +984,7 @@ def cmd_status(args):
         print(f"  synced    {age} min ago")
     if args and profile_names():
         print()
-        print_pings(measure(profile_names()))
+        print_pings(measure(profile_names()), servers)
 
 
 def version():
