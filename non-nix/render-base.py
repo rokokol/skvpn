@@ -4,6 +4,7 @@
 import argparse
 import ipaddress
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -65,6 +66,19 @@ def is_glob(value):
     return "*" in value or "?" in value
 
 
+def catches_sing_box(kind, value, binary):
+    """Whether an entry would match sing-box itself: its traffic never enters the
+    tunnel, and a pattern wide enough to catch it (`*`, `/**`) catches everything —
+    the same refusal skvpn.py makes for `split add`"""
+    if kind == "name":
+        targets = ["sing-box", os.path.basename(binary)]
+    else:
+        targets = [binary]
+    if is_glob(value):
+        return any(re.search(glob_regex(kind, value), t) for t in targets)
+    return value in targets
+
+
 def glob_regex(kind, pattern):
     """The same translation skvpn.py makes for `split add`: a name or path with
     wildcards as process_path_regex — `*` one segment, `**` any run, `?` one character,
@@ -89,6 +103,8 @@ parser.add_argument("--direct-geoip", action="append", type=tagged_path, default
 parser.add_argument("--split-name", action="append", default=[])
 parser.add_argument("--split-path", action="append", type=absolute_path, default=[])
 parser.add_argument("--split-ip", action="append", type=cidr, default=[])
+# Where install.sh found sing-box: what a split entry must not name
+parser.add_argument("--sing-box", dest="sing_box", default="/usr/bin/sing-box")
 parser.add_argument("--tun-interface", default="skvpn-tun")
 parser.add_argument("--tun-address", action="append")
 parser.add_argument("--dns-server", default="8.8.8.8")
@@ -97,6 +113,14 @@ parser.add_argument("--no-ipv6", dest="ipv6", action="store_false")
 parser.add_argument("--rule-set-dir", default="/usr/share/sing-box/rule-set")
 parser.add_argument("--skip-path-check", action="store_true")
 args = parser.parse_args()
+
+for kind, values in (("name", args.split_name), ("path", args.split_path)):
+    for value in values:
+        if catches_sing_box(kind, value, args.sing_box):
+            parser.error(
+                f"--split {kind} {value} would match sing-box itself — its traffic "
+                "never enters the tunnel, and a pattern that wide catches everything"
+            )
 
 zones = list(args.direct_zone)
 geosite = {}

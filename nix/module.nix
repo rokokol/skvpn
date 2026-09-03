@@ -102,6 +102,30 @@ let
     map (globRegex "name") (lib.filter isGlob cfg.split.names)
     ++ map (globRegex "path") (lib.filter isGlob cfg.split.paths);
 
+  # An entry that would match sing-box itself: its traffic never enters the tunnel, and
+  # a pattern wide enough to catch it (`*`, `/**`) catches everything — the tunnel off.
+  # The same refusal `skvpn split add` and the installer make
+  singBoxExe = lib.getExe cfg.singBoxPackage;
+  catchesSingBox =
+    kind: pattern:
+    let
+      targets =
+        if kind == "name" then
+          [
+            "sing-box"
+            (baseNameOf singBoxExe)
+          ]
+        else
+          [ singBoxExe ];
+    in
+    if isGlob pattern then
+      lib.any (t: builtins.match (globRegex kind pattern) t != null) targets
+    else
+      lib.elem pattern targets;
+  splitCatchesSingBox =
+    lib.filter (catchesSingBox "name") cfg.split.names
+    ++ lib.filter (catchesSingBox "path") cfg.split.paths;
+
   ruleSetFile = tag: path: {
     inherit tag;
     type = "local";
@@ -477,6 +501,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = splitCatchesSingBox == [ ];
+        message = ''
+          services.skvpn.split: ${lib.concatStringsSep ", " splitCatchesSingBox} would
+          match sing-box itself — its traffic never enters the tunnel, and a pattern that
+          wide catches everything
+        '';
+      }
+    ];
+
     environment.systemPackages = [
       cfg.singBoxPackage
       cfg.package
@@ -526,15 +561,23 @@ in
       serviceConfig = {
         User = "sing-box";
         StateDirectory = "sing-box-%i";
+        # Upstream's own set. The last two are what a process rule runs on: matching a
+        # connection to a process means reading /proc/<pid>/fd and exe of another user's
+        # processes, and without them the lookup finds nothing and every split entry is
+        # silently a no-op
         CapabilityBoundingSet = [
           "CAP_NET_ADMIN"
           "CAP_NET_RAW"
           "CAP_NET_BIND_SERVICE"
+          "CAP_SYS_PTRACE"
+          "CAP_DAC_READ_SEARCH"
         ];
         AmbientCapabilities = [
           "CAP_NET_ADMIN"
           "CAP_NET_RAW"
           "CAP_NET_BIND_SERVICE"
+          "CAP_SYS_PTRACE"
+          "CAP_DAC_READ_SEARCH"
         ];
         ExecStart = "${lib.getExe cfg.singBoxPackage} -D /var/lib/sing-box-%i -C /etc/sing-box/base.d -c /etc/sing-box/profiles/%i.json run";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";

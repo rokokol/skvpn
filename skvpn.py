@@ -287,7 +287,7 @@ def profile_line(name, node, active, extra=""):
 # --- ping -------------------------------------------------------------------
 
 
-def sing_box_binary():
+def sing_box_binary(required=True):
     """sudo's secure_path may hide the one on PATH, hence the fixed fallbacks."""
     override = os.environ.get("SKVPN_SING_BOX")
     if override:
@@ -299,7 +299,9 @@ def sing_box_binary():
     ):
         if candidate and os.access(candidate, os.X_OK):
             return candidate
-    die("sing-box not found — set SKVPN_SING_BOX to the binary")
+    if required:
+        die("sing-box not found — set SKVPN_SING_BOX to the binary")
+    return None
 
 
 def ping_url():
@@ -662,6 +664,19 @@ def split_kind(args):
     return "name", args
 
 
+def catches_sing_box(kind, value):
+    """Whether a name or path entry would match sing-box itself. Its own traffic never
+    enters the tunnel, so the entry can do nothing right — and a pattern wide enough to
+    catch it (`*`, `sing*`, `/**`) catches everything, which is the tunnel switched off."""
+    binary = sing_box_binary(required=False)
+    targets = ["sing-box"] if kind == "name" else []
+    if binary:
+        targets.append(os.path.basename(binary) if kind == "name" else binary)
+    if is_glob(value):
+        return any(re.search(glob_regex(kind, value), target) for target in targets)
+    return value in targets
+
+
 def split_check(kind, value):
     if kind == "ip":
         if is_glob(value):
@@ -675,6 +690,11 @@ def split_check(kind, value):
             die(f"a path is absolute: {value}")
     elif not value or "/" in value:
         die(f"{value!r} is not a process name — a path is `skvpn split add path {value}`")
+    if catches_sing_box(kind, value):
+        die(
+            f"{value} would match sing-box itself — its traffic never enters the tunnel, "
+            "and a pattern wide enough to catch it catches everything"
+        )
     return value
 
 

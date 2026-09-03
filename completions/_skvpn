@@ -9,6 +9,15 @@ _skvpn_profiles() {
   _describe -t profiles 'profile' names
 }
 
+_skvpn_split_entries() {
+  # The entries of one kind that rm can take — from the list itself, minus the declared
+  # ones rm cannot touch
+  local kind="$1"
+  local -a entries
+  entries=(${(f)"$(skvpn split ls 2>/dev/null | awk -v kind="$kind" '$1 == kind && $NF != "declared" { print $2 }')"})
+  compadd -- $entries
+}
+
 _skvpn() {
   local -a commands=(
     'sub:store or refresh the subscription'
@@ -60,8 +69,17 @@ _skvpn() {
           'rm:drop split entries'
         )
         _describe -t commands 'split command' subcommands
-      elif ((CURRENT == 4)) && [[ "$words[3]" == add || "$words[3]" == rm ]]; then
+      elif ((CURRENT == 4)) && [[ "$words[3]" == add ]]; then
         compadd -- name path ip
+      elif ((CURRENT >= 4)) && [[ "$words[3]" == rm ]]; then
+        local kind=name
+        case "$words[4]" in
+          name | path | ip) kind="$words[4]" ;;
+        esac
+        if ((CURRENT == 4)); then
+          compadd -- name path ip
+        fi
+        _skvpn_split_entries "$kind"
       fi
       ;;
     sub)

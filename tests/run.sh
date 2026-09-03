@@ -417,6 +417,34 @@ else
   fail "the installer rendered a wildcard differently from the CLI"
 fi
 
+# sing-box's own traffic never enters the tunnel, so an entry naming it can do nothing
+# right — and a pattern wide enough to catch it catches everything, the tunnel off
+world split-refuses-sing-box-itself
+if sv split add sing-box >/dev/null 2>&1 ||
+  sv split add 'sing*' >/dev/null 2>&1 ||
+  sv split add '*' >/dev/null 2>&1 ||
+  sv split add path "$HERE/stub/sing-box" >/dev/null 2>&1 ||
+  sv split add path '/**' >/dev/null 2>&1; then
+  fail "an entry matching sing-box itself was accepted"
+elif [[ ! -e $(split_file) ]] && sv split add 'sing-box-ui' >/dev/null &&
+  sv split add path "$HERE/stub/sing-box-ui" >/dev/null; then
+  ok
+else
+  fail "the refusal left a file, or caught a name that merely contains sing-box"
+fi
+
+world installer-refuses-sing-box-in-split
+if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split sing-box >/dev/null 2>&1 ||
+  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split path /usr/bin/sing-box >/dev/null 2>&1 ||
+  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split '*' >/dev/null 2>&1; then
+  fail "the installer accepted a split entry matching sing-box itself"
+elif [[ ! -e "$SKVPN_ROOT/stage/usr/local/bin/skvpn" ]] &&
+  SING_BOX=/opt/sb/bin/sing-box "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split path /usr/bin/sing-box >/dev/null; then
+  ok
+else
+  fail "the refusal left a partial install, or the installer's own SING_BOX was not what a path is checked against"
+fi
+
 world split-add-says-when-the-rule-counts
 out=$(sv split add firefox)
 if [[ -e $(split_file) && "$out" == *"takes effect on the next"* ]] &&
@@ -697,12 +725,13 @@ echo "cli"
 
 world installer-leaves-host-policy-alone-by-default
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
-if [[ -x "$SKVPN_ROOT/stage/usr/local/bin/skvpn" &&
-  -e "$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json" &&
-  -e "$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf" &&
-  -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-restore.service" &&
-  -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
-  ! -e "$SKVPN_ROOT/stage/etc/sysctl.d/90-skvpn.conf" ]]; then
+dropin="$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf"
+if grep -qx 'AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH' "$dropin" &&
+  [[ -x "$SKVPN_ROOT/stage/usr/local/bin/skvpn" &&
+    -e "$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json" &&
+    -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-restore.service" &&
+    -e "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
+    ! -e "$SKVPN_ROOT/stage/etc/sysctl.d/90-skvpn.conf" ]]; then
   ok
 else
   fail "the default install missed the CLI or invented host policy"

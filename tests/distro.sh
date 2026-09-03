@@ -187,7 +187,15 @@ EOF
   # The real merge of base, extra and the imperative split file, judged by the real
   # sing-box — a field its build does not know refuses the lot right here
   sing-box check -C /etc/sing-box/base.d -c /tmp/skvpn-block-profile.json
-  sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
+  # As the unit would run it: the service user with the unit's capabilities, not root.
+  # Process rules live or die on CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH — a fixture run
+  # as root would match processes the unit never could, and pass for the wrong reason
+  local caps=+net_admin,+net_raw,+net_bind_service,+sys_ptrace,+dac_read_search
+  install -d -o sing-box -g sing-box /tmp/skvpn-sing-box
+  chmod 644 /tmp/skvpn-block-profile.json
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
     -c /tmp/skvpn-block-profile.json run >/tmp/skvpn-sing-box.log 2>&1 &
   sing_box_pid=$!
 

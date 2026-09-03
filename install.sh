@@ -414,7 +414,7 @@ if ((UNINSTALL)); then
   exit 0
 fi
 
-render_args=("${CONFIG_ARGS[@]}")
+render_args=("${CONFIG_ARGS[@]}" --sing-box "$SING_BOX")
 ((live)) || render_args+=(--skip-path-check)
 rendered_base=$(mktemp)
 temporary_files=("$rendered_base")
@@ -557,10 +557,16 @@ else
   install -d -m755 "$profiles_dir"
 fi
 
+# The capabilities are the ones a process rule runs on: the lookup reads /proc/<pid>/fd
+# and exe of other users' processes. Upstream's unit carries them; a distribution's
+# trimmed one would make every split entry a silent no-op, and these lines merge into
+# whatever the unit already grants
 install -Dm644 /dev/stdin "$sing_box_dropin" <<EOF
 [Service]
 ExecStart=
 ExecStart=$SING_BOX -D $LOCALSTATEDIR/lib/sing-box-%i -C $SYSCONFDIR/sing-box/base.d -c $SYSCONFDIR/sing-box/profiles/%i.json run
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 EOF
 rec "$sing_box_dropin"
 

@@ -35,8 +35,17 @@ _skvpn() {
     split)
       if ((COMP_CWORD == 2)); then
         mapfile -t COMPREPLY < <(compgen -W "ls add rm" -- "$cur")
-      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == add || ${COMP_WORDS[2]} == rm ]]; then
+      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == add ]]; then
         mapfile -t COMPREPLY < <(compgen -W "name path ip" -- "$cur")
+      elif ((COMP_CWORD >= 3)) && [[ ${COMP_WORDS[2]} == rm ]]; then
+        # What rm can take: the kinds, then the entries of the kind named (name when
+        # none is) — from the list itself, minus the declared ones rm cannot touch
+        local kind=name
+        case "${COMP_WORDS[3]-}" in
+          name | path | ip) kind=${COMP_WORDS[3]} ;;
+        esac
+        mapfile -t COMPREPLY < <(compgen -W "$( ((COMP_CWORD == 3)) && printf 'name path ip\n')
+          $(skvpn split ls 2>/dev/null | awk -v kind="$kind" '$1 == kind && $NF != "declared" { print $2 }')" -- "$cur")
       fi
       ;;
     sub)

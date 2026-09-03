@@ -12,6 +12,10 @@ let
     { lib, ... }:
     {
       options = {
+        assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.attrs;
+          default = [ ];
+        };
         environment.systemPackages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
           default = [ ];
@@ -138,7 +142,17 @@ let
     };
   };
 
+  # An entry that would catch sing-box itself has to be refused at eval time
+  splitSingBox = eval {
+    services.skvpn = {
+      enable = true;
+      split.names = [ "sing*" ];
+    };
+  };
+
   off = eval { };
+
+  broken = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
 in
 {
   base = tuned.environment.etc."sing-box/base.d/00-base.json".text;
@@ -147,6 +161,7 @@ in
   tmpfiles = tuned.systemd.tmpfiles.rules;
   services = lib.attrNames tuned.systemd.services;
   dockerPostStart = tuned.systemd.services."sing-box@".postStart;
+  capabilities = tuned.systemd.services."sing-box@".serviceConfig.AmbientCapabilities;
   timerInterval = tuned.systemd.timers.skvpn-sync.timerConfig.OnCalendar;
   firewall = tuned.networking.firewall.checkReversePath;
   users = lib.attrNames tuned.users.users;
@@ -162,6 +177,8 @@ in
   restoreOffServices = lib.attrNames restoreOff.systemd.services;
 
   splitBase = splitOn.environment.etc."sing-box/base.d/00-base.json".text;
+  splitBroken = broken splitOn;
+  splitSingBoxBroken = broken splitSingBox;
 
   offEtc = lib.attrNames off.environment.etc;
   offPackages = off.environment.systemPackages;

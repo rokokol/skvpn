@@ -14,6 +14,10 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ### Changed
 
+### Fixed
+
+- the NixOS unit now grants `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` like upstream's template unit does: matching a connection to a process reads other users' `/proc/<pid>/fd` and `exe`, and without them every process rule was a silent no-op — the installer's drop-in adds the same two for a distribution whose unit trims them, and the distro suite now runs its fixture sing-box as the service user with the unit's capabilities instead of root, so this cannot pass by accident again
+
 - `skvpn status` shows the `on boot` line only while the restore unit is enabled — with `restore.enable = false` or an install made with `--no-restore` the choice is kept but not what boot does — and spells out `(last up)` when the line is following `up` rather than a pin
 - **a re-install keeps the tunnel up**: the installer restarts each active `sing-box@<profile>` by name instead of a glob `try-restart`, watches it stay active for `RESTART_SETTLE_TICKS` half-seconds, and on failure puts the previous `base.d` files and drop-in back, restarts the instance onto them, prints the unit's journal and exits nonzero — the boot choice and profiles are never touched
 

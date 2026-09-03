@@ -164,12 +164,19 @@
                 # module-test.nix would otherwise surface as a stray failure in whichever
                 # check read the key first — and jq answers 0 for the length of a missing one
                 want 'keys == [
-                  "aliases", "bareAliases", "bareBase", "bareEtc", "base", "dockerPostStart",
+                  "aliases", "bareAliases", "bareBase", "bareEtc", "base", "capabilities", "dockerPostStart",
                   "extra", "firewall", "offAliases", "offEtc", "offFirewall", "offPackages",
                   "offServices", "offSudoRules", "offTmpfiles", "offUsers", "packages",
-                  "presetsBase", "restoreOffServices", "services", "splitBase", "sudoRules",
-                  "timerInterval", "tmpfiles", "users"
+                  "presetsBase", "restoreOffServices", "services", "splitBase", "splitBroken",
+                  "splitSingBoxBroken", "sudoRules", "timerInterval", "tmpfiles", "users"
                 ]' "the dump no longer has the keys these checks read"
+
+                # A split entry that would catch sing-box itself is refused at eval time
+                want '.splitBroken == []' "a plain split list trips an assertion"
+                want '.splitSingBoxBroken | length == 1 and (.[0] | test("sing\\* would"))' "a split entry catching sing-box itself was not refused"
+
+                # A process rule matches only if the unit may read other users' /proc entries
+                want '.capabilities | index("CAP_SYS_PTRACE") and index("CAP_DAC_READ_SEARCH")' "the unit cannot match a process to a connection"
 
                 # Split tunnelling: one direct rule per field, wildcards as a path regex, DNS
                 # steered for the process fields only
