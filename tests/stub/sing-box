@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Stands in for the probe sing-box that `skvpn ping` starts: keeps the config it was
+# handed in SING_BOX_CONFIG, then serves the Clash delay endpoint from FAKE_DELAYS
+# ('HY2=42,TROJAN-node=timeout'; a name it does not list answers 503) and appends every
+# request path to SING_BOX_LOG. SING_BOX_FAIL makes it refuse the config, the way a real
+# sing-box does with a broken one
+set -euo pipefail
+
+config=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c)
+      config="${2:?}"
+      shift 2
+      ;;
+    -D)
+      shift 2
+      ;;
+    run)
+      shift
+      ;;
+    *)
+      echo "sing-box stub: unexpected argument $1" >&2
+      exit 2
+      ;;
+  esac
+done
+[[ -n "$config" ]] || {
+  echo "sing-box stub: no -c given" >&2
+  exit 2
+}
+cp "$config" "${SING_BOX_CONFIG:?}"
+if [[ -n "${SING_BOX_FAIL:-}" ]]; then
+  echo "FATAL[0000] sing-box stub: refused the config" >&2
+  exit 1
+fi
+
+# exec, so the terminate skvpn sends reaches the listener and not a bash in front of it
+exec python3 - "$config" <<'EOF'
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, unquote, urlparse
+
+with open(sys.argv[1]) as handle:
+    config = json.load(handle)
+host, port = config["experimental"]["clash_api"]["external_controller"].rsplit(":", 1)
+tags = {outbound["tag"] for outbound in config["outbounds"]}
+delays = dict(
+    item.split("=", 1) for item in os.environ.get("FAKE_DELAYS", "").split(",") if item
+)
+log = os.environ.get("SING_BOX_LOG")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def answer(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if log:
+            with open(log, "a") as handle:
+                handle.write(self.path + "\n")
+        url = urlparse(self.path)
+        parts = url.path.split("/")
+        if len(parts) != 4 or parts[1] != "proxies" or parts[3] != "delay":
+            return self.answer(404, {"message": "not found"})
+        tag = unquote(parts[2])
+        if tag not in tags:
+            return self.answer(404, {"message": "proxy not found"})
+        if "url" not in parse_qs(url.query):
+            return self.answer(400, {"message": "url is required"})
+        delay = delays.get(tag)
+        if delay is None:
+            return self.answer(503, {"message": "An error occurred in the delay test"})
+        if delay == "timeout":
+            return self.answer(504, {"message": "Timeout"})
+        self.answer(200, {"delay": int(delay)})
+
+
+HTTPServer((host, int(port)), Handler).serve_forever()
+EOF

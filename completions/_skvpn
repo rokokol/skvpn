@@ -17,7 +17,11 @@ _skvpn() {
     'ls:list profiles'
     'up:start a profile'
     'down:stop the active profile'
-    'restore:start the last active profile'
+    'restart:start the active profile over on the current base'
+    'restore:start the profile chosen for boot'
+    'boot:pin a profile for boot, or follow the last up'
+    'split:route listed processes or addresses around the tunnel'
+    'ping:measure latency through every profile with a throwaway sing-box'
     'status:show the active profile and sync age'
     '--version:print the version'
   )
@@ -30,6 +34,35 @@ _skvpn() {
   case "$words[2]" in
     up | rm)
       _skvpn_profiles
+      ;;
+    boot)
+      if ((CURRENT == 3)); then
+        compadd -- last
+        _skvpn_profiles
+      fi
+      ;;
+    ping)
+      if ((CURRENT == 3)); then
+        compadd -- set
+      fi
+      _skvpn_profiles
+      ;;
+    status)
+      if ((CURRENT == 3)); then
+        compadd -- --ping
+      fi
+      ;;
+    split)
+      if ((CURRENT == 3)); then
+        local -a subcommands=(
+          'ls:list the split entries'
+          'add:route a process name (default), executable path or CIDR directly'
+          'rm:drop split entries'
+        )
+        _describe -t commands 'split command' subcommands
+      elif ((CURRENT == 4)) && [[ "$words[3]" == add || "$words[3]" == rm ]]; then
+        compadd -- name path ip
+      fi
       ;;
     sub)
       if ((CURRENT == 3)); then

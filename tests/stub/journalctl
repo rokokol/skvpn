@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stands in for the journal the installer prints after a failed restart; records the call
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${JOURNALCTL_LOG:?}"
+printf 'journal (stub): %s\n' "$*"

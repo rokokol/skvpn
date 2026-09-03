@@ -26,8 +26,11 @@ declare -A IMAGE=(
 )
 
 # Containers have no PID-1 systemd; --no-systemd is a real install that skips the live
-# systemctl calls, which is exactly what it exists for
-INSTALL_FLAGS=(--no-systemd --docker)
+# systemctl calls, which is exactly what it exists for. The split entries are the
+# declared layer of the split test below: curl goes direct by process name, and the
+# path wildcard and the CIDR are there for the installed sing-box to accept — a field
+# the distribution's build does not know would refuse the whole base
+INSTALL_FLAGS=(--no-systemd --docker --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16)
 UNINSTALL_FLAGS=(--no-systemd)
 
 # Bootstrap: only what the harness itself needs in a minimal image — never a dependency
@@ -58,11 +61,83 @@ smoke() { # runs inside the container after a successful install
   out=$("$prefix/bin/skvpn" 2>&1 || true)
   grep -qF 'usage: skvpn' <<<"$out"
   "$prefix/bin/skvpn" --version | grep -qxF "skvpn $(cat VERSION)"
-  python3 -c 'import json; json.load(open("/etc/sing-box/base.d/00-base.json"))'
+  # No jq in these images; python3 is a preflight dependency, so it is what reads JSON
+  python3 - <<'EOF'
+import json
+base = json.load(open("/etc/sing-box/base.d/00-base.json"))
+rules = base["route"]["rules"]
+assert {"process_name": ["curl"], "outbound": "direct"} in rules, rules
+assert {"process_path_regex": ["^/opt/[^/]*/bin/tor$"], "outbound": "direct"} in rules, rules
+assert {"ip_cidr": ["10.99.0.0/16"], "outbound": "direct"} in rules, rules
+assert {"process_name": ["curl"], "server": "bootstrap"} in base["dns"]["rules"]
+EOF
+  # The declared list is what `split ls` reads back, marked as not its own
+  "$prefix/bin/skvpn" split ls | grep -qE '^  name +curl +declared$'
+  "$prefix/bin/skvpn" split ls | grep -qE '^  path +/opt/\*/bin/tor +declared$'
   test -f /etc/systemd/system/sing-box@.service.d/skvpn.conf
 }
 
+# The imperative layer, written before the fixture sing-box starts so it reads the file
+# like a restarted instance would; the merge itself is the real -C, checked by the real
+# sing-box below. python3 by resolved path — the wildcard form, so that field is on the
+# wire too — while bash stays unlisted as the control
+split_setup() {
+  local prefix="$1" python_dir python_bin out
+  python_bin=$(readlink -f "$(command -v python3)")
+  python_dir=$(dirname "$python_bin")
+  out=$("$prefix/bin/skvpn" split add path "$python_dir/python3*")
+  grep -qF 'takes effect on the next' <<<"$out"
+  test -f /etc/sing-box/base.d/70-split.json
+  "$prefix/bin/skvpn" split ls | grep -qF "  path  $python_dir/python3*"
+}
+
+# With the proxy outbound blocking, the only way out is a split rule. curl carries the
+# declared name rule, python3 the imperative path rule, and bash — unlisted, by IP so no
+# DNS is involved — has to get no answer, or the two above passed for the wrong reason.
+# Connecting is not the test: auto_redirect has the kernel accept the connection for
+# sing-box before any rule runs, and the block only closes it afterwards — so the control
+# asks for a response line and must not get one
+split_smoke() {
+  timeout 30 curl -fsSI http://archive.ubuntu.com/ >/dev/null ||
+    timeout 30 curl -fsSI http://archive.ubuntu.com/ >/dev/null
+  timeout 30 python3 -c 'import urllib.request; urllib.request.urlopen("http://archive.ubuntu.com/", timeout=20).read(1)'
+  # shellcheck disable=SC2016 # the inner bash expands $line, this one must not
+  if timeout 15 bash -c '
+    exec 3<>/dev/tcp/1.1.1.1/80 || exit 1
+    printf "HEAD / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n" >&3
+    read -t 10 -r line <&3 && [[ -n "$line" ]]
+  ' 2>/dev/null; then
+    echo "  !! an unlisted process got an answer past the blocking outbound" >&2
+    return 1
+  fi
+}
+
+# The probe sing-box runs while the blocking TUN is up: DIRECT answers in milliseconds
+# only if the probe's mark takes its sockets past the redirect the way sing-box's own
+# go — inside the tunnel it would be blocked like everything else. BLOCK is the profile
+# that can never answer, and the distribution's sing-box has to carry the Clash API for
+# any of this to start
+ping_smoke() {
+  local prefix="$1" out
+  install -m 640 -g sing-box /dev/stdin /etc/sing-box/profiles/DIRECT.json <<'EOF'
+{"outbounds":[{"type":"direct","tag":"proxy"}]}
+EOF
+  install -m 640 -g sing-box /dev/stdin /etc/sing-box/profiles/BLOCK.json <<'EOF'
+{"outbounds":[{"type":"block","tag":"proxy"}]}
+EOF
+  "$prefix/bin/skvpn" ping set https://archive.ubuntu.com/ | grep -qF 'stored'
+  out=$("$prefix/bin/skvpn" ping 2>&1) || {
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  printf '%s\n' "$out"
+  grep -qE '^   DIRECT .* [0-9]+ ms$' <<<"$out" || return 1
+  grep -qE '^   BLOCK .* (unreachable|timeout)$' <<<"$out" || return 1
+  rm -f /etc/sing-box/profiles/DIRECT.json /etc/sing-box/profiles/BLOCK.json
+}
+
 dind_smoke() {
+  local prefix="$1"
   local docker_host="unix:///run/skvpn-dind.sock"
   local dockerd_pid="" sing_box_pid=""
   local -a firewall_backend=()
@@ -108,6 +183,9 @@ dind_smoke() {
   cat >/tmp/skvpn-block-profile.json <<'EOF'
 {"outbounds":[{"type":"block","tag":"proxy"}]}
 EOF
+  split_setup "$prefix"
+  # The real merge of base, extra and the imperative split file, judged by the real
+  # sing-box — a field its build does not know refuses the lot right here
   sing-box check -C /etc/sing-box/base.d -c /tmp/skvpn-block-profile.json
   sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
     -c /tmp/skvpn-block-profile.json run >/tmp/skvpn-sing-box.log 2>&1 &
@@ -134,6 +212,12 @@ EOF
     done
     exit 1
   '
+
+  say "split entries leave past the blocking TUN, an unlisted process does not"
+  split_smoke
+
+  say "skvpn ping measures outside the active TUN, through the distribution's sing-box"
+  ping_smoke "$prefix"
 
   dind_cleanup
   trap - RETURN
@@ -170,8 +254,11 @@ if [[ "${1:-}" != "--inside" ]]; then
     printf '\n== %s (%s)\n' "$distro" "$image"
     # One retry on the pull: a mirror hiccup is not a verdict on anything
     "$engine" pull -q "$image" >/dev/null || "$engine" pull -q "$image" >/dev/null
-    # The checkout goes in read-only — the run must not be able to edit it
-    if ! "$engine" run --rm --privileged -v "$REPO:/src:ro" "$image" \
+    # The checkout goes in read-only — the run must not be able to edit it. The resolver
+    # is named because the engine would otherwise copy the observer's: a developer's host
+    # running skvpn lists its own TUN's DNS there, and inside the container that address
+    # is the fixture's blocking TUN — every direct lookup would sink into it
+    if ! "$engine" run --rm --privileged --dns 1.1.1.1 -v "$REPO:/src:ro" "$image" \
       bash /src/tests/distro.sh --inside "$distro"; then
       printf '  %s: FAILED\n' "$distro"
       fails=$((fails + 1))
@@ -266,7 +353,7 @@ smoke "$prefix" || die "smoke test failed"
 
 say "Docker-in-Docker reaches Ubuntu repositories through the active TUN"
 bash -c "${DIND_INSTALL[$distro]}" >/dev/null
-dind_smoke
+dind_smoke "$prefix"
 
 say "uninstall removes exactly what the manifest names"
 mapfile -t manifest_paths < <(grep -v '^#' "$share_dir/install-manifest")
@@ -275,6 +362,8 @@ for path in "${manifest_paths[@]}"; do
   [[ ! -e "$path" && ! -L "$path" ]] || die "uninstall left $path behind"
 done
 [[ ! -e "$share_dir" ]] || die "uninstall left $share_dir behind"
+# State outlives the install, like the profiles and the subscription
+[[ -f /etc/sing-box/base.d/70-split.json ]] || die "uninstall took the imperative split list with it"
 
 say "a second uninstall is quiet and succeeds"
 ./install.sh --uninstall "${UNINSTALL_FLAGS[@]}" >/dev/null || die "uninstall is not idempotent"

@@ -6,7 +6,7 @@ _skvpn() {
   local cmd=${COMP_WORDS[1]-}
 
   if ((COMP_CWORD == 1)); then
-    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restore status --version" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restart restore boot split ping status --version" -- "$cur")
     return
   fi
 
@@ -14,6 +14,30 @@ _skvpn() {
     up | rm)
       # Live names, not a cached list: the directory is world-listable on purpose
       mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null)" -- "$cur")
+      ;;
+    boot)
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "last $(skvpn ls --names 2>/dev/null)" -- "$cur")
+      fi
+      ;;
+    ping)
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "set $(skvpn ls --names 2>/dev/null)" -- "$cur")
+      else
+        mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null)" -- "$cur")
+      fi
+      ;;
+    status)
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "--ping" -- "$cur")
+      fi
+      ;;
+    split)
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "ls add rm" -- "$cur")
+      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == add || ${COMP_WORDS[2]} == rm ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "name path ip" -- "$cur")
+      fi
       ;;
     sub)
       if ((COMP_CWORD == 2)); then

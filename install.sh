@@ -16,6 +16,10 @@ SERVICE_GROUP="${SERVICE_GROUP:-sing-box}"
 PROFILES_OWNER="${PROFILES_OWNER:-root}"
 PROFILES_MODE="${PROFILES_MODE:-2755}"
 OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
+# How long a restarted instance has to stay active before the new base counts as good, in
+# half-second ticks: a simple unit is active the instant restart returns, and a config
+# sing-box rejects kills it a moment later
+RESTART_SETTLE_TICKS="${RESTART_SETTLE_TICKS:-4}"
 DISCORD_VOICE=0
 SYSTEMD=1
 CONFIG_ARGS=()
@@ -55,6 +59,11 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
                        add a local domain rule-set; repeatable
   --direct-geoip TAG=PATH
                        add a local address rule-set; repeatable
+  --split [KIND] VALUE route a process around the tunnel: KIND is name (the default),
+                       path (an absolute executable path) or ip (an address or CIDR);
+                       repeatable. name and path take wildcards: * one path segment,
+                       ** any run, ? one character. A process literally called ip,
+                       path or name is spelled --split name ip
   --tun-interface NAME TUN interface name (default: skvpn-tun)
   --tun-address CIDR   TUN address; repeatable, replaces both defaults
   --stack NAME         TUN stack: system, gvisor or mixed (default: system)
@@ -71,8 +80,14 @@ The CLI goes to \$PREFIX/bin/skvpn, completions and the install manifest to
 \$SYSTEMD_UNITDIR. python3, systemd, and sing-box must already be installed; a failed
 preflight prints distro-specific guidance and installs nothing on its own.
 
+A re-run restarts each active sing-box@<profile> by name and watches it for
+RESTART_SETTLE_TICKS half-seconds (default: 4); an instance that does not stay up gets
+the previous base config back, and the run fails with the unit's journal.
+
 Runtime environment (read by the installed skvpn, not this script):
   SKVPN_ROOT           relocate every path skvpn touches (default: /)
+  SKVPN_SING_BOX       the sing-box binary \`skvpn ping\` starts its probe with
+                       (default: the first of PATH, /run/current-system/sw/bin, /usr/bin)
 EOF
 }
 
@@ -109,6 +124,19 @@ while [[ $# -gt 0 ]]; do
     --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack)
       CONFIG_ARGS+=("$1" "${2:?value required by $1}")
       shift 2
+      ;;
+    --split)
+      # A kind word is consumed only when a value follows it; the bare word is the value
+      case "${2:-}" in
+        name | path | ip)
+          CONFIG_ARGS+=("--split-$2" "${3:?value required by --split $2}")
+          shift 3
+          ;;
+        *)
+          CONFIG_ARGS+=(--split-name "${2:?value required by --split}")
+          shift 2
+          ;;
+      esac
       ;;
     --extra-settings)
       EXTRA_SETTINGS="${2:?file required}"
@@ -327,6 +355,14 @@ disable_discord_voice_fix() {
   fi
 }
 
+# The sing-box@<profile> instances systemd reports active, into active_units
+collect_active_units() {
+  active_units=()
+  while read -r unit _; do
+    [[ -n "$unit" ]] && active_units+=("$unit")
+  done < <(systemctl list-units --plain --no-legend --state=active 'sing-box@*.service')
+}
+
 if ((UNINSTALL)); then
   managed=0
   if ((! live)) || [[ -f "$managed_state" ]]; then
@@ -335,10 +371,7 @@ if ((UNINSTALL)); then
   if ((managed && live_sys)); then
     systemctl disable --now skvpn-sync.timer >/dev/null
     systemctl disable skvpn-restore.service >/dev/null 2>&1 || true
-    active_units=()
-    while read -r unit _; do
-      [[ -n "$unit" ]] && active_units+=("$unit")
-    done < <(systemctl list-units --plain --no-legend --state=active 'sing-box@*.service')
+    collect_active_units
     if ((${#active_units[@]})); then
       systemctl stop "${active_units[@]}"
     fi
@@ -385,7 +418,13 @@ render_args=("${CONFIG_ARGS[@]}")
 ((live)) || render_args+=(--skip-path-check)
 rendered_base=$(mktemp)
 temporary_files=("$rendered_base")
-cleanup() { rm -f "${temporary_files[@]}"; }
+temporary_dirs=()
+cleanup() {
+  rm -f "${temporary_files[@]}"
+  if ((${#temporary_dirs[@]})); then
+    rm -rf "${temporary_dirs[@]}"
+  fi
+}
 trap cleanup EXIT
 python3 "$here/non-nix/render-base.py" "${render_args[@]}" >"$rendered_base"
 if [[ -n "$EXTRA_SETTINGS" ]]; then
@@ -456,6 +495,43 @@ install -Dm644 "$here/completions/_skvpn" "$root/share/zsh/site-functions/_skvpn
 rec "$root/share/zsh/site-functions/_skvpn"
 install -Dm644 "$here/VERSION" "$root/share/skvpn/VERSION"
 rec "$root/share/skvpn/VERSION"
+
+# What the running instance is on right now, kept until it has proven the new base:
+# a base sing-box rejects would otherwise take the tunnel down with nothing to go back to
+base_files=("$base_config" "$extra_config" "$sing_box_dropin")
+backup_dir=""
+if ((live_sys)); then
+  backup_dir=$(mktemp -d)
+  temporary_dirs+=("$backup_dir")
+  for path in "${base_files[@]}"; do
+    if [[ -f "$path" ]]; then
+      cp -p "$path" "$backup_dir/${path##*/}"
+    fi
+  done
+fi
+restore_base_backup() {
+  local path
+  for path in "${base_files[@]}"; do
+    if [[ -f "$backup_dir/${path##*/}" ]]; then
+      cp -p "$backup_dir/${path##*/}" "$path"
+    else
+      rm -f "$path"
+    fi
+  done
+}
+# Active at tick 0 and still active after every settle tick — the explicit return keeps
+# the last tick's skipped sleep from being read as a failure
+unit_settles() {
+  local unit="$1" tick
+  for ((tick = 0; tick <= RESTART_SETTLE_TICKS; tick++)); do
+    systemctl is-active --quiet "$unit" || return 1
+    if ((tick < RESTART_SETTLE_TICKS)); then
+      sleep 0.5
+    fi
+  done
+  return 0
+}
+
 install -Dm644 "$rendered_base" "$base_config"
 rec "$base_config"
 rm -f "$rendered_base"
@@ -549,9 +625,6 @@ else
   rm -f "$sudoers_file" "$profile_file"
 fi
 
-cleanup
-trap - EXIT
-
 if [[ "$DISCORD_VOICE" == 1 ]]; then
   if ((live_sys)); then
     if [[ ! -f "$rp_filter_state" ]]; then
@@ -585,7 +658,29 @@ if ((live_sys)); then
     systemctl disable --now skvpn-restore.service >/dev/null 2>&1 || true
   fi
   systemctl enable --now skvpn-sync.timer >/dev/null
-  systemctl try-restart 'sing-box@*.service'
+
+  # By name, and watched: a glob try-restart cannot tell a restart that took from one
+  # whose instance died on the new base a second later. The CLI, units and manifest above
+  # stay as installed either way — the manifest names the same paths, so --uninstall keeps
+  # working; only the base goes back
+  collect_active_units
+  for unit in "${active_units[@]:-}"; do
+    [[ -n "$unit" ]] || continue
+    if ! systemctl restart "$unit" || ! unit_settles "$unit"; then
+      echo "install.sh: $unit did not stay up on the new base config — restoring the previous one" >&2
+      restore_base_backup
+      systemctl daemon-reload || true
+      systemctl restart "$unit" || true
+      if command -v journalctl >/dev/null; then
+        journalctl -u "$unit" -n 20 --no-pager >&2 || true
+      fi
+      echo "install.sh: $unit is back on the previous base config; fix the flags and re-run" >&2
+      exit 1
+    fi
+  done
 fi
+
+cleanup
+trap - EXIT
 
 echo "installed skvpn $VERSION to $root/bin/skvpn with completions under $root/share"

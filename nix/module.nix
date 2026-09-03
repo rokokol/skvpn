@@ -87,6 +87,21 @@ let
   # geoip second — a stable order, not an alphabetical accident
   ruleSetTags = lib.attrNames directGeosite ++ lib.attrNames directGeoip;
 
+  # Split entries with wildcards become process_path_regex, the exact fields taking none:
+  # `*` one path segment, `**` any run, `?` one character; a name pattern matches the
+  # executable's basename. The same translation skvpn.py makes for `split add`
+  isGlob = pattern: lib.hasInfix "*" pattern || lib.hasInfix "?" pattern;
+  globRegex =
+    kind: pattern:
+    (if kind == "name" then "(^|/)" else "^")
+    + lib.replaceStrings [ "\\*\\*" "\\*" "\\?" ] [ ".*" "[^/]*" "[^/]" ] (lib.escapeRegex pattern)
+    + "$";
+  splitNames = lib.filter (p: !isGlob p) cfg.split.names;
+  splitPaths = lib.filter (p: !isGlob p) cfg.split.paths;
+  splitRegex =
+    map (globRegex "name") (lib.filter isGlob cfg.split.names)
+    ++ map (globRegex "path") (lib.filter isGlob cfg.split.paths);
+
   ruleSetFile = tag: path: {
     inherit tag;
     type = "local";
@@ -124,6 +139,19 @@ let
         }
         ++ lib.optional (directGeosite != { }) {
           rule_set = lib.attrNames directGeosite;
+          server = "bootstrap";
+        }
+        # A bypassed process resolves outside the tunnel too; addresses have no DNS side
+        ++ lib.optional (splitNames != [ ]) {
+          process_name = splitNames;
+          server = "bootstrap";
+        }
+        ++ lib.optional (splitPaths != [ ]) {
+          process_path = splitPaths;
+          server = "bootstrap";
+        }
+        ++ lib.optional (splitRegex != [ ]) {
+          process_path_regex = splitRegex;
           server = "bootstrap";
         };
       final = "remote";
@@ -188,6 +216,23 @@ let
       }
       ++ lib.optional (ruleSetTags != [ ]) {
         rule_set = ruleSetTags;
+        outbound = "direct";
+      }
+      # Split tunnelling, bypass only: one rule per field, each routed direct
+      ++ lib.optional (splitNames != [ ]) {
+        process_name = splitNames;
+        outbound = "direct";
+      }
+      ++ lib.optional (splitPaths != [ ]) {
+        process_path = splitPaths;
+        outbound = "direct";
+      }
+      ++ lib.optional (splitRegex != [ ]) {
+        process_path_regex = splitRegex;
+        outbound = "direct";
+      }
+      ++ lib.optional (cfg.split.ips != [ ]) {
+        ip_cidr = cfg.split.ips;
         outbound = "direct";
       };
 
@@ -334,6 +379,47 @@ in
           description = "Local binary rule-sets of addresses routed direct, keyed by tag; no DNS side";
         };
       };
+
+    split = {
+      names = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "firefox"
+          "steam"
+        ];
+        description = ''
+          Process names whose traffic leaves around the tunnel — split tunnelling in the
+          bypass sense; everything unlisted still goes through the proxy. The name is the
+          executable's, as sing-box reads it off the connection's process; `*` and `?`
+          are wildcards (`chrom*`), rendered as a regex on the executable's path. Their
+          DNS goes to the bootstrap resolver too, except on hosts where
+          `systemd-resolved`'s stub owns the query: there the resolver is the process the
+          DNS rule sees, while the connection itself still matches and goes direct.
+          `skvpn split add` keeps an imperative list beside this one, in
+          `base.d/70-split.json`
+        '';
+      };
+
+      paths = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "/run/current-system/sw/bin/qbittorrent" ];
+        description = ''
+          Absolute executable paths routed around the tunnel, same as `names` but whole.
+          sing-box cannot match a PID, so this is the knob for a binary whose process
+          name is shared or generic. Wildcards: `*` one path segment, `**` any run, `?`
+          one character — `/opt/*/bin/tor`
+        '';
+      };
+
+      ips = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "10.0.0.0/8" ];
+        description = "Destination addresses or CIDRs routed around the tunnel; no DNS side";
+      };
+    };
 
     extraSettings = lib.mkOption {
       type = lib.types.attrs;

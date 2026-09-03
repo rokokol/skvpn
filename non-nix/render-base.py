@@ -2,7 +2,9 @@
 """Render the non-Nix sing-box base config from install.sh options."""
 
 import argparse
+import ipaddress
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +48,36 @@ def tagged_path(value):
     return tag, path
 
 
+def cidr(value):
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"not an address or CIDR: {value}") from error
+
+
+def absolute_path(value):
+    if not value.startswith("/"):
+        raise argparse.ArgumentTypeError(f"a path is absolute: {value}")
+    return value
+
+
+def is_glob(value):
+    return "*" in value or "?" in value
+
+
+def glob_regex(kind, pattern):
+    """The same translation skvpn.py makes for `split add`: a name or path with
+    wildcards as process_path_regex — `*` one segment, `**` any run, `?` one character,
+    a name matching the executable's basename."""
+    body = (
+        re.escape(pattern)
+        .replace(r"\*\*", ".*")
+        .replace(r"\*", "[^/]*")
+        .replace(r"\?", "[^/]")
+    )
+    return ("(^|/)" if kind == "name" else "^") + body + "$"
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--tailscale", action="store_true")
 parser.add_argument("--docker", action="store_true")
@@ -53,6 +85,10 @@ parser.add_argument("--preset", action="append", choices=PRESETS, default=[])
 parser.add_argument("--direct-zone", action="append", default=[])
 parser.add_argument("--direct-geosite", action="append", type=tagged_path, default=[])
 parser.add_argument("--direct-geoip", action="append", type=tagged_path, default=[])
+# Split tunnelling, bypass only: the listed processes and addresses leave direct
+parser.add_argument("--split-name", action="append", default=[])
+parser.add_argument("--split-path", action="append", type=absolute_path, default=[])
+parser.add_argument("--split-ip", action="append", type=cidr, default=[])
 parser.add_argument("--tun-interface", default="skvpn-tun")
 parser.add_argument("--tun-address", action="append")
 parser.add_argument("--dns-server", default="8.8.8.8")
@@ -89,11 +125,25 @@ if not args.skip_path_check:
 geosite_tags = sorted(geosite)
 geoip_tags = sorted(geoip)
 rule_tags = geosite_tags + geoip_tags
+all_names = list(dict.fromkeys(args.split_name))
+all_paths = list(dict.fromkeys(args.split_path))
+split_names = [v for v in all_names if not is_glob(v)]
+split_paths = [v for v in all_paths if not is_glob(v)]
+split_regex = [glob_regex("name", v) for v in all_names if is_glob(v)]
+split_regex += [glob_regex("path", v) for v in all_paths if is_glob(v)]
+split_ips = list(dict.fromkeys(args.split_ip))
 dns_rules = []
 if zones:
     dns_rules.append({"domain_suffix": zones, "server": "bootstrap"})
 if geosite_tags:
     dns_rules.append({"rule_set": geosite_tags, "server": "bootstrap"})
+# A bypassed process resolves outside the tunnel too; addresses have no DNS side
+if split_names:
+    dns_rules.append({"process_name": split_names, "server": "bootstrap"})
+if split_paths:
+    dns_rules.append({"process_path": split_paths, "server": "bootstrap"})
+if split_regex:
+    dns_rules.append({"process_path_regex": split_regex, "server": "bootstrap"})
 
 inbound = {
     "type": "tun",
@@ -120,6 +170,14 @@ if zones:
     route_rules.append({"domain_suffix": zones, "outbound": "direct"})
 if rule_tags:
     route_rules.append({"rule_set": rule_tags, "outbound": "direct"})
+if split_names:
+    route_rules.append({"process_name": split_names, "outbound": "direct"})
+if split_paths:
+    route_rules.append({"process_path": split_paths, "outbound": "direct"})
+if split_regex:
+    route_rules.append({"process_path_regex": split_regex, "outbound": "direct"})
+if split_ips:
+    route_rules.append({"ip_cidr": split_ips, "outbound": "direct"})
 
 config = {
     "log": {"level": "warn", "timestamp": True},

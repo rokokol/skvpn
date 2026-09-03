@@ -119,6 +119,25 @@ let
     };
   };
 
+  # Split tunnelling on its own, so the tuned base keeps its last rules where the
+  # assertions index them
+  splitOn = eval {
+    services.skvpn = {
+      enable = true;
+      split = {
+        names = [
+          "firefox"
+          "chrom*"
+        ];
+        paths = [
+          "/usr/bin/steam"
+          "/opt/*/bin/tor"
+        ];
+        ips = [ "10.0.0.0/8" ];
+      };
+    };
+  };
+
   off = eval { };
 in
 {
@@ -141,6 +160,8 @@ in
   presetsBase = presetsOn.environment.etc."sing-box/base.d/00-base.json".text;
 
   restoreOffServices = lib.attrNames restoreOff.systemd.services;
+
+  splitBase = splitOn.environment.etc."sing-box/base.d/00-base.json".text;
 
   offEtc = lib.attrNames off.environment.etc;
   offPackages = off.environment.systemPackages;

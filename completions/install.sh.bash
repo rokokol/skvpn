@@ -15,7 +15,7 @@ _install_sh_skvpn() {
     -h --help -v --version --prefix --destdir --uninstall --no-systemd
     --fix-discord-voice --tailscale --docker
     --direct-russia --direct-china --direct-iran
-    --direct-zone --direct-geosite --direct-geoip
+    --direct-zone --direct-geosite --direct-geoip --split
     --tun-interface --tun-address --stack --no-ipv6 --dns-server
     --extra-settings --no-restore --sync-interval --trusted-user
   )
@@ -33,6 +33,10 @@ _install_sh_skvpn() {
       ;;
     --trusted-user)
       mapfile -t COMPREPLY < <(compgen -u -- "$cur")
+      return
+      ;;
+    --split)
+      mapfile -t COMPREPLY < <(compgen -W "name path ip" -- "$cur")
       return
       ;;
     --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --stack | --dns-server | --sync-interval)

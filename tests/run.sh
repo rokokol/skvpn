@@ -54,8 +54,19 @@ world() {
   mkdir -p "$SKVPN_ROOT"
   export SYSTEMCTL_LOG="$SKVPN_ROOT/systemctl.log"
   : >"$SYSTEMCTL_LOG"
+  export JOURNALCTL_LOG="$SKVPN_ROOT/journalctl.log"
+  : >"$JOURNALCTL_LOG"
+  # The probe sing-box that `ping` starts: where the stub keeps the config it was handed
+  # and the requests it answered
+  export SING_BOX_CONFIG="$SKVPN_ROOT/probe-config.json"
+  export SING_BOX_LOG="$SKVPN_ROOT/sing-box.log"
+  : >"$SING_BOX_LOG"
   unset FAKE_ACTIVE
   unset SYSTEMCTL_FAIL
+  unset FAKE_DELAYS
+  unset SING_BOX_FAIL
+  # An override exported in the developer's shell would reach past the stub unnoticed
+  unset SKVPN_SING_BOX
 }
 
 sv() { python3 "$SKVPN" "$@"; }
@@ -236,6 +247,311 @@ else
   fail "restore invented a profile where none was remembered"
 fi
 
+boot_file() { printf '%s/var/lib/skvpn/boot' "$SKVPN_ROOT"; }
+
+# A pin beats the last `up`: what restore starts is the choice made by hand
+world boot-pins-a-profile-for-restore
+sv add "$HY2" "$TROJAN" >/dev/null
+sv up HY2 >/dev/null
+sv boot TROJAN-node >/dev/null
+: >"$SYSTEMCTL_LOG"
+sv restore >/dev/null
+if [[ "$(cat "$(boot_file)")" == TROJAN-node && "$(cat "$(active_file)")" == HY2 ]] &&
+  grep -q 'start --no-block sing-box@TROJAN-node.service' "$SYSTEMCTL_LOG" &&
+  [[ "$(sv boot)" == "  on boot   TROJAN-node" ]]; then
+  ok
+else
+  fail "the pin did not reach restore, or replaced the last up"
+fi
+
+world boot-last-follows-the-last-up
+sv add "$HY2" "$TROJAN" >/dev/null
+sv boot TROJAN-node >/dev/null
+sv up HY2 >/dev/null
+sv boot last >/dev/null
+: >"$SYSTEMCTL_LOG"
+sv restore >/dev/null
+if [[ ! -e $(boot_file) ]] &&
+  grep -q 'start --no-block sing-box@HY2.service' "$SYSTEMCTL_LOG" &&
+  [[ "$(sv boot)" == "  on boot   HY2 (last up)" ]]; then
+  ok
+else
+  fail "boot last did not drop the pin, or restore ignored the last up"
+fi
+
+world boot-refuses-an-unknown-profile
+if sv boot nope >/dev/null 2>&1; then
+  fail "a profile that does not exist was pinned for boot"
+elif [[ ! -e $(boot_file) ]]; then
+  ok
+else
+  fail "a refused pin still landed on disk"
+fi
+
+world rm-clears-a-pin
+sv add "$HY2" >/dev/null
+sv boot HY2 >/dev/null
+sv rm HY2 >/dev/null
+if [[ ! -e $(boot_file) ]]; then
+  ok
+else
+  fail "a deleted profile stayed pinned for boot"
+fi
+
+# The choice is kept either way, but with the restore unit off it is not what boot does
+world status-shows-the-boot-choice-only-when-restore-is-enabled
+sv add "$HY2" "$TROJAN" >/dev/null
+sv up HY2 >/dev/null
+export FAKE_ACTIVE=HY2
+following=$(sv status)
+sv boot TROJAN-node >/dev/null
+pinned=$(sv status)
+export SYSTEMCTL_FAIL='is-enabled'
+off=$(sv status)
+if [[ "$following" == *"  profile   HY2"* && "$following" == *"  on boot   HY2 (last up)"* &&
+  "$pinned" == *"  on boot   TROJAN-node"* && "$pinned" != *"(last up)"* &&
+  "$off" == *"  profile   HY2"* && "$off" != *"on boot"* ]]; then
+  ok
+else
+  fail "status misreported the boot choice, or showed one with restore off"
+fi
+
+echo "split"
+
+split_file() { printf '%s/etc/sing-box/base.d/70-split.json' "$SKVPN_ROOT"; }
+
+# The rendered file is the state: one direct rule per kind, a bootstrap DNS rule for the
+# process kinds — and no restart of its own; dropping the tunnel is the user's call
+world split-add-writes-the-rule-file-and-asks-for-a-restart
+export FAKE_ACTIVE=HY2
+out=$(sv split add firefox)
+sv split add path /usr/bin/steam >/dev/null
+sv split add ip 10.0.0.0/8 >/dev/null
+file=$(split_file)
+if jq -e '.route.rules | map(select(.process_name == ["firefox"] and .outbound == "direct")) | length == 1' "$file" >/dev/null &&
+  jq -e '.route.rules | any(.process_path == ["/usr/bin/steam"] and .outbound == "direct")' "$file" >/dev/null &&
+  jq -e '.route.rules | any(.ip_cidr == ["10.0.0.0/8"] and .outbound == "direct")' "$file" >/dev/null &&
+  jq -e '.dns.rules | length == 2 and all(.server == "bootstrap")' "$file" >/dev/null &&
+  jq -e '.dns.rules | any(has("ip_cidr")) | not' "$file" >/dev/null &&
+  [[ "$(stat -c %a "$file")" == 644 && "$out" == *'HY2 is still on the old rules'* &&
+  "$out" == *'sudo skvpn restart'* ]] &&
+  ! grep -q restart "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "the split rules did not land as direct rules, or the restart was done instead of asked for"
+fi
+
+world restart-starts-the-active-profile-over
+export FAKE_ACTIVE=HY2
+if sv restart >/dev/null && grep -qx 'restart sing-box@HY2.service' "$SYSTEMCTL_LOG"; then
+  unset FAKE_ACTIVE
+  if sv restart >/dev/null 2>&1; then
+    fail "restart with nothing up exited 0"
+  else
+    ok
+  fi
+else
+  fail "restart did not restart the active unit"
+fi
+
+world split-rm-empties-and-removes-the-file
+sv split add firefox >/dev/null
+sv split add firefox >/dev/null
+sv split rm firefox >/dev/null
+if [[ ! -e $(split_file) ]] && ! sv split rm firefox >/dev/null 2>&1; then
+  ok
+else
+  fail "an emptied split list left its file, or rm of a missing entry passed"
+fi
+
+# Both lists are on the wire, so both are shown: the declared one from the rendered base,
+# marked as such and never edited here, then the imperative one
+world split-ls-lists-both-lists-in-kind-order
+mkdir -p "$SKVPN_ROOT/etc/sing-box/base.d"
+printf '{"route":{"rules":[{"process_name":["telegram"],"outbound":"direct"},{"ip_cidr":["192.168.0.0/16"],"outbound":"direct"}]}}\n' \
+  >"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+sv split add ip 10.0.0.0/8 >/dev/null
+sv split add path /usr/bin/steam >/dev/null
+sv split add firefox >/dev/null
+want="  name  $(printf '%-40s' telegram) declared
+  name  firefox
+  path  /usr/bin/steam
+  ip    $(printf '%-40s' 192.168.0.0/16) declared
+  ip    10.0.0.0/8"
+if [[ "$(sv split ls)" == "$want" && "$(sv split)" == "$want" ]]; then
+  ok
+else
+  fail "split ls did not list both lists in kind order"
+fi
+
+# Wildcards: sing-box's exact fields take none, so a name or path with * or ? becomes a
+# regex on the executable's path — and comes back as the glob it was in `ls` and `rm`
+world split-wildcards-become-a-path-regex
+sv split add 'chrom*' >/dev/null
+sv split add path '/opt/*/bin/tor' >/dev/null
+sv split add path '/nix/store/**/bin/x?' >/dev/null
+file=$(split_file)
+want=$'  name  chrom*\n  path  /opt/*/bin/tor\n  path  /nix/store/**/bin/x?'
+if jq -e '.route.rules == [{"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$", "^/nix/store/.*/bin/x[^/]$"], "outbound": "direct"}]' "$file" >/dev/null &&
+  jq -e '.dns.rules[0].process_path_regex | length == 3' "$file" >/dev/null &&
+  [[ "$(sv split ls)" == "$want" ]] &&
+  sv split rm 'chrom*' path '/opt/*/bin/tor' >/dev/null 2>&1 ||
+  sv split rm 'chrom*' >/dev/null && sv split rm path '/opt/*/bin/tor' >/dev/null &&
+  jq -e '.route.rules[0].process_path_regex == ["^/nix/store/.*/bin/x[^/]$"]' "$file" >/dev/null &&
+  ! sv split add ip '10.0.*' >/dev/null 2>&1; then
+  ok
+else
+  fail "wildcards did not render as a path regex, or did not read back as globs"
+fi
+
+# The installer's renderer makes the very same translation, or a list moved between the
+# declared and the imperative layer would change meaning
+world installer-renders-split-wildcards-the-same-way
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split 'chrom*' --split path '/opt/*/bin/tor' >/dev/null
+base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
+if jq -e '.route.rules[-1] == {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "outbound": "direct"}' "$base" >/dev/null &&
+  jq -e '.dns.rules[-1].process_path_regex == ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"]' "$base" >/dev/null &&
+  jq -e '.route.rules | any(has("process_name")) | not' "$base" >/dev/null; then
+  ok
+else
+  fail "the installer rendered a wildcard differently from the CLI"
+fi
+
+world split-add-says-when-the-rule-counts
+out=$(sv split add firefox)
+if [[ -e $(split_file) && "$out" == *"takes effect on the next"* ]] &&
+  ! grep -q restart "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "split add with nothing running restarted something, or did not say when the rule counts"
+fi
+
+# A kind word without a value is a usage error, not a process called ip; the bad values
+# must not leave a half-written file behind
+world split-validates-values
+if sv split add ip not-an-ip >/dev/null 2>&1 ||
+  sv split add path relative/bin >/dev/null 2>&1 ||
+  sv split add name /usr/bin/x >/dev/null 2>&1 ||
+  sv split add ip >/dev/null 2>&1 ||
+  sv split frobnicate >/dev/null 2>&1; then
+  fail "an invalid split entry was accepted"
+elif [[ ! -e $(split_file) ]] && sv split add name ip >/dev/null &&
+  [[ "$(sv split ls)" == "  name  ip" ]]; then
+  ok
+else
+  fail "an invalid split entry left a file, or a process literally called ip cannot be listed"
+fi
+
+echo "ping"
+
+# One throwaway sing-box carries every profile as an outbound tagged with its name and
+# answers the Clash delay endpoint; the config is what the stub kept, the answers are
+# what the stub was told to give
+world ping-probes-every-profile-through-a-temporary-sing-box
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=timeout'
+probe_dirs() { find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'skvpn-ping-*' 2>/dev/null | wc -l; }
+tmp_before=$(probe_dirs)
+out=$(sv ping)
+tmp_after=$(probe_dirs)
+if [[ "$out" == *"HY2"*"42 ms"* && "$out" == *"TROJAN-node"*"timeout"* ]] &&
+  jq -e '.outbounds | map(.tag) | sort == ["HY2", "TROJAN-node"]' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.route.default_mark == 8228 and .route.auto_detect_interface == true' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e 'has("inbounds") | not' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.experimental.clash_api.external_controller | startswith("127.0.0.1:")' "$SING_BOX_CONFIG" >/dev/null &&
+  grep -q 'url=https%3A%2F%2Fwww.google.com%2Fgenerate_204' "$SING_BOX_LOG" &&
+  [[ "$tmp_before" == "$tmp_after" ]] &&
+  ! pgrep -f "$SKVPN_ROOT/probe" >/dev/null; then
+  ok
+else
+  fail "the probe carried the wrong outbounds, the wrong mark, the wrong url, or left something behind"
+fi
+
+world ping-names-only-the-asked-profiles
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42'
+sv ping HY2 >/dev/null
+if jq -e '.outbounds | map(.tag) == ["HY2"]' "$SING_BOX_CONFIG" >/dev/null; then
+  rm -f "$SING_BOX_CONFIG"
+  if sv ping nope >/dev/null 2>&1 || [[ -e $SING_BOX_CONFIG ]]; then
+    fail "an unknown profile name was probed"
+  else
+    ok
+  fi
+else
+  fail "ping probed more than it was asked for"
+fi
+
+# https only: sing-box's delay test swaps a plain-http url for its own default site
+# without a word, so accepting http would measure the wrong thing silently
+world ping-set-accepts-a-host-or-an-https-url
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42'
+ping_file="$SKVPN_ROOT/etc/sing-box/ping.url"
+sv ping set example.org >/dev/null
+host_form=$(<"$ping_file")
+sv ping >/dev/null
+sv ping set https://1.1.1.1/x >/dev/null
+url_form=$(<"$ping_file")
+if [[ "$host_form" == "https://example.org/" && "$url_form" == "https://1.1.1.1/x" ]] &&
+  grep -q 'url=https%3A%2F%2Fexample.org%2F' "$SING_BOX_LOG" &&
+  ! sv ping set 'http://x/' >/dev/null 2>&1 &&
+  ! sv ping set 'ftp://x' >/dev/null 2>&1 &&
+  ! sv ping set 'a/b' >/dev/null 2>&1; then
+  ok
+else
+  fail "ping set mangled the target, or accepted one that is not https"
+fi
+
+# The probe resolves like the base's bootstrap — the system resolver, for the nodes'
+# own hostnames only; the site's name is the node's to resolve, so no resolver of the
+# probe's own is on the wire to be blocked. ipv4_only is load-bearing: the distro suite
+# watched an unanswered AAAA hold every lookup for seconds and eat the test's budget
+world ping-resolves-node-names-with-the-system-resolver
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42'
+sv ping >/dev/null
+if jq -e '.dns == {"servers": [{"tag": "bootstrap", "type": "local"}], "final": "bootstrap", "strategy": "ipv4_only"}' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.route.default_domain_resolver == "bootstrap"' "$SING_BOX_CONFIG" >/dev/null; then
+  ok
+else
+  fail "the probe brought a resolver of its own, or lost the ipv4_only strategy"
+fi
+
+world ping-marks-an-unlisted-answer-unreachable
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=10'
+if [[ "$(sv ping)" == *"TROJAN-node"*"unreachable"* ]]; then
+  ok
+else
+  fail "a node that could not do the test was not marked unreachable"
+fi
+
+world ping-reports-a-probe-that-refuses-to-start
+sv add "$HY2" >/dev/null
+export SING_BOX_FAIL=1
+if out=$(sv ping 2>&1); then
+  fail "ping exited 0 with a probe that refused its config"
+elif [[ "$out" == *refused* ]]; then
+  ok
+else
+  fail "ping hid why the probe did not start"
+fi
+
+world status-ping-appends-the-table-and-plain-status-does-not-probe
+sv add "$HY2" >/dev/null
+export FAKE_ACTIVE=HY2
+export FAKE_DELAYS='HY2=42'
+with_ping=$(sv status --ping)
+rm -f "$SING_BOX_CONFIG"
+sv status >/dev/null
+if [[ "$with_ping" == *"  profile   HY2"* && "$with_ping" == *"* HY2"*"42 ms"* &&
+  ! -e $SING_BOX_CONFIG ]] && ! sv status --nope >/dev/null 2>&1; then
+  ok
+else
+  fail "status --ping missed the table, or a plain status started a probe"
+fi
+
 echo "subscription"
 
 # file:// is a scheme urlopen speaks, which is what lets the sync logic run offline
@@ -413,6 +729,10 @@ printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
   --tun-address 10.42.0.1/30 \
   --dns-server 1.1.1.1 \
   --stack gvisor \
+  --split firefox \
+  --split path /usr/bin/steam \
+  --split ip 10.0.0.0/8 \
+  --split name ip \
   --extra-settings "$SKVPN_ROOT/extra.json" \
   --no-restore \
   --sync-interval weekly \
@@ -426,6 +746,11 @@ if jq -e '
 ' "$base" >/dev/null &&
   jq -e '.dns.servers[1].server == "1.1.1.1"' "$base" >/dev/null &&
   jq -e '.route.rules | any(.domain_suffix? | index(".ru"))' "$base" >/dev/null &&
+  jq -e '.route.rules[-3] == {"process_name": ["firefox", "ip"], "outbound": "direct"}' "$base" >/dev/null &&
+  jq -e '.route.rules[-2] == {"process_path": ["/usr/bin/steam"], "outbound": "direct"}' "$base" >/dev/null &&
+  jq -e '.route.rules[-1] == {"ip_cidr": ["10.0.0.0/8"], "outbound": "direct"}' "$base" >/dev/null &&
+  jq -e '.dns.rules[-2] == {"process_name": ["firefox", "ip"], "server": "bootstrap"}' "$base" >/dev/null &&
+  jq -e '.dns.rules[-1] == {"process_path": ["/usr/bin/steam"], "server": "bootstrap"}' "$base" >/dev/null &&
   jq -e '.route.rule_set | map(.tag) | sort == ["custom-ip", "geoip-ru", "geosite-ru"]' "$base" >/dev/null &&
   jq -e '.route.rule_set | map(select(.tag == "geosite-ru"))[0].path == "/rules/site.srs"' "$base" >/dev/null &&
   grep -q '^OnCalendar=weekly$' "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
@@ -443,10 +768,22 @@ world installer-drops-the-tun-ipv6-address
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --no-ipv6 >/dev/null
 base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
 if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "system"' \
-  "$base" >/dev/null; then
+  "$base" >/dev/null &&
+  jq -e '.route.rules | length == 3' "$base" >/dev/null; then
   ok
 else
-  fail "--no-ipv6 left the TUN a v6 address, or the default stack drifted"
+  fail "--no-ipv6 left the TUN a v6 address, the default stack drifted, or a rule came from nowhere"
+fi
+
+world installer-rejects-bad-split-values
+if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split ip not-an-ip >/dev/null 2>&1 ||
+  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split path relative/bin >/dev/null 2>&1 ||
+  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split >/dev/null 2>&1; then
+  fail "an invalid split value was accepted"
+elif [[ ! -e "$SKVPN_ROOT/stage/usr/local/bin/skvpn" ]]; then
+  ok
+else
+  fail "an invalid split value left a partial installation"
 fi
 
 world installer-help-lists-every-feature
@@ -454,7 +791,7 @@ help=$("$REPO/install.sh" --help)
 missing=""
 for option in help version prefix destdir uninstall no-systemd tailscale docker \
   direct-russia direct-china direct-iran direct-zone direct-geosite \
-  direct-geoip tun-interface tun-address dns-server extra-settings no-restore sync-interval \
+  direct-geoip split tun-interface tun-address dns-server extra-settings no-restore sync-interval \
   trusted-user fix-discord-voice stack no-ipv6; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"
 done
@@ -712,6 +1049,78 @@ elif [[ -e "$SKVPN_ROOT/usr/bin/skvpn" &&
   ok
 else
   fail "uninstall deleted runtime files after an active-instance stop failed"
+fi
+
+# A settings change must not take the tunnel down: the active instance is restarted by
+# name onto the new base, and the boot choice on disk is none of the installer's business
+world reinstall-keeps-the-active-profile-up
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+  "RESTART_SETTLE_TICKS=0"
+)
+sv add "$HY2" >/dev/null
+sv up HY2 >/dev/null
+profile_before=$(<"$(profile HY2)")
+export FAKE_ACTIVE=HY2
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null
+: >"$SYSTEMCTL_LOG"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --dns-server 9.9.9.9 >/dev/null
+base="$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+if grep -qx 'restart sing-box@HY2.service' "$SYSTEMCTL_LOG" &&
+  grep -q 'is-active --quiet sing-box@HY2.service' "$SYSTEMCTL_LOG" &&
+  ! grep -q 'stop sing-box@' "$SYSTEMCTL_LOG" &&
+  ! grep -q try-restart "$SYSTEMCTL_LOG" &&
+  [[ "$(cat "$(active_file)")" == HY2 && "$(<"$(profile HY2)")" == "$profile_before" ]] &&
+  jq -e '.dns.servers[1].server == "9.9.9.9"' "$base" >/dev/null; then
+  ok
+else
+  fail "a re-install stopped the active profile, skipped its restart, or touched its state"
+fi
+
+# An instance that dies on the new base gets the old one back, and the run says so
+world failed-restart-rolls-the-base-back
+export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
+printf '0\n' >"$SYSCTL_STATE"
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+  "RESTART_SETTLE_TICKS=0"
+)
+sv add "$HY2" >/dev/null
+sv up HY2 >/dev/null
+export FAKE_ACTIVE=HY2
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --dns-server 9.9.9.9 >/dev/null
+base="$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+base_before=$(<"$base")
+printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
+export SYSTEMCTL_FAIL='is-active'
+: >"$SYSTEMCTL_LOG"
+if env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" \
+  --extra-settings "$SKVPN_ROOT/extra.json" >/dev/null 2>&1; then
+  fail "an instance that died on the new base was reported as installed"
+elif [[ "$(<"$base")" == "$base_before" &&
+! -e "$SKVPN_ROOT/etc/sing-box/base.d/50-extra.json" &&
+"$(grep -c '^restart sing-box@HY2.service$' "$SYSTEMCTL_LOG")" == 2 &&
+-s "$JOURNALCTL_LOG" &&
+"$(cat "$(active_file)")" == HY2 ]]; then
+  ok
+else
+  fail "the previous base was not restored, the instance not restarted onto it, or the journal not shown"
 fi
 
 world skvpn-prints-its-version

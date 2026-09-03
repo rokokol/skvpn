@@ -6,16 +6,21 @@ shared base comes from the NixOS module. Switching is `systemctl start sing-box@
 """
 
 import base64
+import ipaddress
 import json
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 # Relocates every path at once, so the tool can be exercised outside root
 ROOT = Path(os.environ.get("SKVPN_ROOT", "/"))
@@ -23,8 +28,27 @@ CONF = ROOT / "etc/sing-box"
 PROFILES = CONF / "profiles"
 SUB_URL = CONF / "subscription.url"
 MANIFEST = CONF / "subscription.profiles"
+BASE_D = CONF / "base.d"
+# The imperative split list, rendered straight into the base directory: sing-box's -C
+# appends its rules after the declared base, and the file is the whole state
+SPLIT = BASE_D / "70-split.json"
+# CLI kind → sing-box rule field; dict order is the render order. A name or path with a
+# wildcard is rendered as process_path_regex instead, see glob_regex
+SPLIT_KINDS = {"name": "process_name", "path": "process_path", "ip": "ip_cidr"}
+# What `split ls` shows, in order: the three kinds plus regexes written by hand
+SPLIT_SHOWN = ("name", "path", "regex", "ip")
+# What `ping` reaches for through each node
+PING_URL = CONF / "ping.url"
+DEFAULT_PING_URL = "https://www.google.com/generate_204"
+# The mark sing-box puts on its own sockets so its nftables redirect lets them out —
+# auto_redirect_output_mark, whose default this is. The probe borrows it for the same
+# reason: measured through the physical interface, not inside the active tunnel
+REDIRECT_MARK = 0x2024
+PING_TIMEOUT_MS = 5000
 STAMP = ROOT / "var/lib/skvpn/last-sync"
 ACTIVE = ROOT / "var/lib/skvpn/active"
+# A profile pinned for boot by hand; without it boot follows ACTIVE, the last `up`
+BOOT = ROOT / "var/lib/skvpn/boot"
 UNIT = "sing-box@{}.service"
 MAX_AGE = 24 * 3600
 
@@ -59,8 +83,24 @@ def remembered():
     return ACTIVE.read_text().strip() if ACTIVE.exists() else None
 
 
+def pinned():
+    return BOOT.read_text().strip() if BOOT.exists() else None
+
+
+def boot_choice():
+    """(name, pinned) — what `restore` would start: the pin if there is one, else the last
+    `up`; (None, False) when boot starts nothing."""
+    pin = pinned()
+    if pin is not None:
+        return pin, True
+    return remembered(), False
+
+
 def forget(name):
     """Drop the boot choice when the profile behind it goes away."""
+    if pinned() == name:
+        BOOT.unlink()
+        print(f"     {name} was pinned for boot, boot now follows the last up")
     if remembered() == name:
         ACTIVE.unlink()
         print(f"     {name} was the boot choice, boot now starts nothing")
@@ -76,27 +116,31 @@ def disown(name):
         MANIFEST.write_text("\n".join(n for n in names if n != name) + "\n")
 
 
+def probe(*args):
+    """A systemctl call whose answer is the point — never dies, unlike systemctl()."""
+    return subprocess.run(["systemctl", *args], capture_output=True, text=True, check=False)
+
+
 def systemctl(*args):
-    probe = subprocess.run(
-        ["systemctl", *args], capture_output=True, text=True, check=False
-    )
-    if probe.returncode != 0:
-        die(probe.stderr.strip().splitlines()[0] if probe.stderr.strip() else "systemctl failed")
+    result = probe(*args)
+    if result.returncode != 0:
+        die(result.stderr.strip().splitlines()[0] if result.stderr.strip() else "systemctl failed")
 
 
 def running():
     # Asked of systemd, not of the profile directory, which an unprivileged user cannot read
-    probe = subprocess.run(
-        ["systemctl", "list-units", "--plain", "--no-legend", "--state=active", "sing-box@*"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    for line in probe.stdout.splitlines():
+    result = probe("list-units", "--plain", "--no-legend", "--state=active", "sing-box@*")
+    for line in result.stdout.splitlines():
         unit = line.split()[0]
         if unit.startswith("sing-box@") and unit.endswith(".service"):
             return unit.removeprefix("sing-box@").removesuffix(".service")
     return None
+
+
+def restore_enabled():
+    # The unit is absent when the NixOS option is off, disabled and removed by an
+    # installer run with --no-restore: either way there is no boot to speak of
+    return probe("is-enabled", "--quiet", "skvpn-restore.service").returncode == 0
 
 
 # --- URI → sing-box outbound ------------------------------------------------
@@ -221,6 +265,197 @@ def write_profile(name, config):
     return path
 
 
+def read_profile(name):
+    """The `proxy` outbound of a profile, None for a file that is not one — a crash
+    mid-write leaves a truncated file, a hand edit a wrong shape. PermissionError is
+    the caller's: the contents are root-only on purpose."""
+    try:
+        return json.loads(profile_path(name).read_text())["outbounds"][0]
+    except (ValueError, LookupError, TypeError):
+        return None
+
+
+def profile_line(name, node, active, extra=""):
+    """One row of `ls`, and of the ping table when `extra` carries the answer."""
+    mark = "*" if name == active else " "
+    row = f" {mark} {name:<24} {node['type']:<10} {node.get('server', '-')}"
+    if extra:
+        row = f"{row:<70} {extra}"
+    return row
+
+
+# --- ping -------------------------------------------------------------------
+
+
+def sing_box_binary():
+    """sudo's secure_path may hide the one on PATH, hence the fixed fallbacks."""
+    override = os.environ.get("SKVPN_SING_BOX")
+    if override:
+        return override
+    for candidate in (
+        shutil.which("sing-box"),
+        "/run/current-system/sw/bin/sing-box",
+        "/usr/bin/sing-box",
+    ):
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    die("sing-box not found — set SKVPN_SING_BOX to the binary")
+
+
+def ping_url():
+    return PING_URL.read_text().strip() if PING_URL.exists() else DEFAULT_PING_URL
+
+
+def normalize_ping_target(arg):
+    """A bare host becomes https://host/, an https URL is kept as given. https only:
+    sing-box's delay test quietly swaps a plain-http URL for its own default site, so
+    an http target would measure something else and never say so."""
+    if "://" in arg:
+        url = urlparse(arg)
+        if url.scheme != "https" or not url.hostname:
+            die(f"the ping site is an https url or a bare host — sing-box tests nothing else: {arg}")
+        return arg
+    if not arg or "/" in arg or any(c.isspace() for c in arg):
+        die(f"not a host name: {arg}")
+    return f"https://{arg}/"
+
+
+def redirect_mark():
+    """The active TUN's output mark, should the base have moved it off the default."""
+    if not BASE_D.is_dir():
+        return REDIRECT_MARK
+    for path in sorted(BASE_D.glob("*.json")):
+        try:
+            inbounds = json.loads(path.read_text()).get("inbounds", [])
+        except (OSError, ValueError, AttributeError):
+            continue
+        for inbound in inbounds:
+            mark = inbound.get("auto_redirect_output_mark") if isinstance(inbound, dict) else None
+            if isinstance(mark, int):
+                return mark
+            if isinstance(mark, str):
+                try:
+                    return int(mark, 0)
+                except ValueError:
+                    pass
+    return REDIRECT_MARK
+
+
+def probe_config(names, port):
+    """One throwaway sing-box: every asked profile as an outbound tagged with its name,
+    no inbounds, the Clash API on loopback to ask for delays."""
+    outbounds = []
+    for name in names:
+        node = read_profile(name)
+        if node is None:
+            die(f"broken profile: {name}")
+        outbounds.append({**node, "tag": name})
+    return {
+        "log": {"level": "error"},
+        # The system resolver, as the base's own bootstrap: it only ever resolves the
+        # nodes' hostnames — the site's name travels to the node and is resolved there,
+        # the way it does through the tunnel — so no resolver of the probe's own could
+        # be blocked on the way. ipv4_only as in the base, and not for taste: an AAAA
+        # query that never comes back holds the lookup for seconds, and the delay test's
+        # budget is spent waiting on it before a single packet reaches the site
+        "dns": {
+            "servers": [{"tag": "bootstrap", "type": "local"}],
+            "final": "bootstrap",
+            "strategy": "ipv4_only",
+        },
+        "outbounds": outbounds,
+        "route": {
+            "auto_detect_interface": True,
+            "default_mark": redirect_mark(),
+            "default_domain_resolver": "bootstrap",
+        },
+        "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{port}"}},
+    }
+
+
+def free_port():
+    with socket.socket() as probe_socket:
+        probe_socket.bind(("127.0.0.1", 0))
+        return probe_socket.getsockname()[1]
+
+
+def wait_for_port(proc, port, stderr_path):
+    """Until the API answers, or the probe has died — the port was free a moment ago,
+    and a config sing-box rejects shows up here first."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            lines = stderr_path.read_text().strip().splitlines()
+            die(f"the probe sing-box exited: {lines[-1] if lines else 'no output'}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.1)
+    die("the probe sing-box never opened its API")
+
+
+def delay(port, name, url):
+    """Milliseconds through one outbound; 'timeout' when the site never answered, None
+    for everything else the node could not do."""
+    query = urlencode({"url": url, "timeout": PING_TIMEOUT_MS})
+    request = f"http://127.0.0.1:{port}/proxies/{quote(name, safe='')}/delay?{query}"
+    # Loopback, so an http_proxy in the environment must not get in the way
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=PING_TIMEOUT_MS / 1000 + 3) as resp:
+            return int(json.loads(resp.read())["delay"])
+    except urllib.error.HTTPError as exc:
+        return "timeout" if exc.code == 504 else None
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def measure(names):
+    """{name: delay(...)} for every name, through one probe sing-box that lives only as
+    long as this call — the config carries node credentials, so it sits in a private
+    directory and goes with it."""
+    binary = sing_box_binary()
+    url = ping_url()
+    port = free_port()
+    work = Path(tempfile.mkdtemp(prefix="skvpn-ping-"))
+    config = work / "config.json"
+    stderr_path = work / "stderr"
+    proc = None
+    try:
+        write_private(config, json.dumps(probe_config(names, port)) + "\n", 0o600)
+        # A file, not a pipe: a chatty child would fill the pipe and hang the parent
+        with open(stderr_path, "w") as stderr:
+            proc = subprocess.Popen(
+                [binary, "-D", str(work), "-c", str(config), "run"],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+            )
+        wait_for_port(proc, port, stderr_path)
+        with ThreadPoolExecutor(max_workers=min(16, len(names))) as pool:
+            return dict(zip(names, pool.map(lambda n: delay(port, n, url), names)))
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def print_pings(results):
+    active = running()
+    for name, answer in results.items():
+        node = read_profile(name) or {"type": "?"}
+        if isinstance(answer, int):
+            extra = f"{answer} ms"
+        else:
+            extra = answer or "unreachable"
+        print(profile_line(name, node, active, extra))
+
+
 # --- subscription -----------------------------------------------------------
 
 
@@ -313,6 +548,188 @@ def sync(if_stale=False, fatal=True):
     STAMP.write_text("")
 
 
+# --- split tunnelling -------------------------------------------------------
+
+
+def is_glob(value):
+    return "*" in value or "?" in value
+
+
+def glob_regex(kind, pattern):
+    """A name or path with wildcards as sing-box's process_path_regex — the exact fields
+    take no wildcards. `*` is one path segment, `**` any run, `?` one character; a name
+    pattern matches the executable's basename, which is what process_name is."""
+    body = (
+        re.escape(pattern)
+        .replace(r"\*\*", ".*")
+        .replace(r"\*", "[^/]*")
+        .replace(r"\?", "[^/]")
+    )
+    return ("(^|/)" if kind == "name" else "^") + body + "$"
+
+
+def regex_glob(regex):
+    """(kind, pattern) back from glob_regex's shape, None for a regex written by hand."""
+    if regex.startswith("(^|/)") and regex.endswith("$"):
+        kind, body = "name", regex[5:-1]
+    elif regex.startswith("^") and regex.endswith("$"):
+        kind, body = "path", regex[1:-1]
+    else:
+        return None
+    body = body.replace(".*", "**").replace("[^/]*", "*").replace("[^/]", "?")
+    return kind, re.sub(r"\\(.)", r"\1", body)
+
+
+def as_list(value):
+    return [value] if isinstance(value, str) else list(value or [])
+
+
+def split_rules(path):
+    """{kind: [values]} read back from one base.d file's route rules; every shown kind
+    present, wildcard regexes folded back into the name or path they came from."""
+    lists = {kind: [] for kind in SPLIT_SHOWN}
+    try:
+        rules = json.loads(path.read_text()).get("route", {}).get("rules", [])
+    except ValueError:
+        die(f"{path} is not JSON — fix or delete it")
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        for kind, field in SPLIT_KINDS.items():
+            lists[kind].extend(v for v in as_list(rule.get(field)) if v not in lists[kind])
+        for regex in as_list(rule.get("process_path_regex")):
+            back = regex_glob(regex)
+            kind, value = back if back else ("regex", regex)
+            if value not in lists[kind]:
+                lists[kind].append(value)
+    return lists
+
+
+def split_load():
+    """The imperative list — what `split add`/`rm` edit."""
+    if not SPLIT.exists():
+        return {kind: [] for kind in SPLIT_SHOWN}
+    return split_rules(SPLIT)
+
+
+def split_declared():
+    """The lists the renderers wrote — NixOS options or installer flags — which this
+    tool shows but never edits."""
+    lists = {kind: [] for kind in SPLIT_SHOWN}
+    for path in sorted(BASE_D.glob("*.json")) if BASE_D.is_dir() else []:
+        if path == SPLIT:
+            continue
+        for kind, values in split_rules(path).items():
+            lists[kind].extend(v for v in values if v not in lists[kind])
+    return lists
+
+
+def split_save(lists):
+    if not any(lists.values()):
+        SPLIT.unlink(missing_ok=True)
+        return
+    # One rule per field, each routed direct: -C appends arrays, so nothing here can
+    # reorder or replace the base's rules — bypass is the only shape that composes.
+    # Wildcards go to the regex field; a hand-written regex is carried as it is
+    fields = [
+        ("process_name", [v for v in lists["name"] if not is_glob(v)]),
+        ("process_path", [v for v in lists["path"] if not is_glob(v)]),
+        (
+            "process_path_regex",
+            [glob_regex(k, v) for k in ("name", "path") for v in lists[k] if is_glob(v)]
+            + lists.get("regex", []),
+        ),
+        ("ip_cidr", lists["ip"]),
+    ]
+    route = [{field: values, "outbound": "direct"} for field, values in fields if values]
+    # A bypassed process should resolve outside the tunnel too, like a direct zone;
+    # addresses have no DNS side
+    dns = [
+        {field: values, "server": "bootstrap"}
+        for field, values in fields
+        if values and field != "ip_cidr"
+    ]
+    config = {"route": {"rules": route}, "dns": {"rules": dns}}
+    SPLIT.parent.mkdir(parents=True, exist_ok=True)
+    # No secrets in here, and sing-box reads it as the service user
+    write_private(SPLIT, json.dumps(config, indent=2) + "\n", 0o644)
+
+
+def split_kind(args):
+    """(kind, values): a leading kind word is consumed, `name` is the default."""
+    if args and args[0] in SPLIT_KINDS:
+        return args[0], args[1:]
+    return "name", args
+
+
+def split_check(kind, value):
+    if kind == "ip":
+        if is_glob(value):
+            die(f"addresses take a CIDR, not a wildcard: {value}")
+        try:
+            return str(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            die(f"not an address or CIDR: {value}")
+    if kind == "path":
+        if not value.startswith("/"):
+            die(f"a path is absolute: {value}")
+    elif not value or "/" in value:
+        die(f"{value!r} is not a process name — a path is `skvpn split add path {value}`")
+    return value
+
+
+def split_notice():
+    """sing-box reads its routing rules only at start, and dropping the tunnel is the
+    user's call: the file is written, the restart is asked for, never done here."""
+    active = running()
+    if active is None:
+        print("     takes effect on the next `skvpn up`")
+        return
+    print(f"     {active} is still on the old rules — apply with `sudo skvpn restart`")
+
+
+SPLIT_USAGE = "usage: skvpn split [ls | add [name|path|ip] <value>… | rm [name|path|ip] <value>…]"
+
+
+def cmd_split(args):
+    if args == ["ls"] or not args:
+        # Both lists, since both are on the wire: the declared one is the renderers'
+        # and only shown, the other is what add/rm edit
+        declared = split_declared()
+        own = split_load()
+        for kind in SPLIT_SHOWN:
+            for value in declared[kind]:
+                print(f"  {kind:<5} {value:<40} declared")
+            for value in own[kind]:
+                if value not in declared[kind]:
+                    print(f"  {kind:<5} {value}")
+        return
+    if args[0] not in ("add", "rm"):
+        die(SPLIT_USAGE)
+    kind, values = split_kind(args[1:])
+    if not values:
+        # `split add ip` alone is a kind without a value, not a process called ip:
+        # that one is spelled `split add name ip`
+        die(SPLIT_USAGE)
+    need_root()
+    lists = split_load()
+    for value in values:
+        value = split_check(kind, value)
+        if args[0] == "add":
+            if value in lists[kind]:
+                print(f"  =  {kind} {value} (already listed)")
+                continue
+            lists[kind].append(value)
+            print(f"  +  {kind} {value}")
+        else:
+            if value not in lists[kind]:
+                die(f"not in the split list: {kind} {value}")
+            lists[kind].remove(value)
+            print(f"  -  {kind} {value}")
+    split_save(lists)
+    split_notice()
+
+
 # --- commands ---------------------------------------------------------------
 
 
@@ -376,16 +793,14 @@ def cmd_ls(args):
     for name in profile_names():
         # The directory lists for everyone, the contents carry node credentials and do not
         try:
-            node = json.loads(profile_path(name).read_text())["outbounds"][0]
+            node = read_profile(name)
         except PermissionError:
             die("profile contents are root-only — try `sudo skvpn ls`")
-        except (ValueError, LookupError, TypeError):
-            # A crash mid-write can leave a truncated file, a hand edit a wrong shape;
-            # name it instead of a traceback
+        if node is None:
+            # Named instead of a traceback
             print(f"   {name:<24} broken profile")
             continue
-        mark = "*" if name == active else " "
-        print(f" {mark} {name:<24} {node['type']:<10} {node.get('server', '-')}")
+        print(profile_line(name, node, active))
 
 
 def cmd_up(args):
@@ -417,10 +832,22 @@ def cmd_down(_args):
     ACTIVE.unlink(missing_ok=True)
 
 
-def cmd_restore(_args):
-    """Boot-time half of `up` — no fetching and no choosing, just what was last up."""
+def cmd_restart(_args):
+    """Start the active profile over on the base as it is now — the way a changed split
+    list, or any other base.d edit, gets onto the wire."""
     need_root()
-    name = remembered()
+    active = running()
+    if active is None:
+        die("nothing is up — `skvpn up <name>` starts a profile")
+    systemctl("restart", UNIT.format(active))
+    print(f"  ↻  {active}")
+
+
+def cmd_restore(_args):
+    """Boot-time half of `up` — no fetching and no choosing, just the pin or what was
+    last up."""
+    need_root()
+    name, _ = boot_choice()
     if name is None:
         return
     if not profile_path(name).exists():
@@ -429,14 +856,72 @@ def cmd_restore(_args):
     print(f"  →  {name}")
 
 
-def cmd_status(_args):
+def boot_line():
+    name, is_pin = boot_choice()
+    if name is None:
+        return "  on boot   nothing"
+    return f"  on boot   {name}" if is_pin else f"  on boot   {name} (last up)"
+
+
+def cmd_boot(args):
+    """Pin a profile for boot regardless of what is up, or go back to following `up`.
+    `last` is the word for the latter, so a profile of that name cannot be pinned."""
+    if not args:
+        print(boot_line())
+        return
+    if len(args) != 1:
+        die("usage: skvpn boot [<name> | last]")
+    need_root()
+    if args[0] == "last":
+        BOOT.unlink(missing_ok=True)
+        print("  ⚓  last up")
+        return
+    name = slug(args[0])
+    if not profile_path(name).exists():
+        die(f"no such profile: {name}")
+    BOOT.parent.mkdir(parents=True, exist_ok=True)
+    BOOT.write_text(name + "\n")
+    print(f"  ⚓  {name}")
+
+
+def cmd_ping(args):
+    """Latency to the ping site through every profile — or the named ones — measured
+    by one throwaway sing-box, so nothing is switched. `set` is reserved for the target,
+    so a profile of that name is only reachable through the bare form."""
+    need_root()
+    if args[:1] == ["set"]:
+        if len(args) != 2:
+            die("usage: skvpn ping set <host|url>")
+        url = normalize_ping_target(args[1])
+        CONF.mkdir(parents=True, exist_ok=True)
+        write_private(PING_URL, url + "\n", 0o644)
+        print(f"  stored  {url}")
+        return
+    names = [slug(arg) for arg in args] or profile_names()
+    if not names:
+        die("no profiles")
+    for name in names:
+        if not profile_path(name).exists():
+            die(f"no such profile: {name}")
+    print_pings(measure(names))
+
+
+def cmd_status(args):
+    if args not in ([], ["--ping"]):
+        die("usage: skvpn status [--ping]")
+    if args:
+        need_root()
     active = running()
     print(f"  profile   {active or 'none'}")
-    if remembered():
-        print(f"  on boot   {remembered()}")
+    # A choice is kept either way, but with restore off it is not what boot does
+    if boot_choice()[0] is not None and restore_enabled():
+        print(boot_line())
     if STAMP.exists():
         age = int((time.time() - STAMP.stat().st_mtime) / 60)
         print(f"  synced    {age} min ago")
+    if args and profile_names():
+        print()
+        print_pings(measure(profile_names()))
 
 
 def version():
@@ -456,7 +941,11 @@ COMMANDS = {
     "ls": cmd_ls,
     "up": cmd_up,
     "down": cmd_down,
+    "restart": cmd_restart,
     "restore": cmd_restore,
+    "boot": cmd_boot,
+    "split": cmd_split,
+    "ping": cmd_ping,
     "status": cmd_status,
 }
 

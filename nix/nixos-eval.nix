@@ -49,6 +49,7 @@ let
         zones = [ ".ru" ];
         geosite.geosite-test = geositeStub;
       };
+      split.names = [ "firefox" ];
       extraSettings.log.level = "debug";
       trustedUsers = [ "alice" ];
     };

@@ -107,8 +107,11 @@
                   bash
                   coreutils
                   diffutils
+                  # find and pgrep: the ping cases look for what the probe left behind
+                  findutils
                   gnugrep
                   jq
+                  procps
                   python3
                   systemd
                 ];
@@ -164,9 +167,18 @@
                   "aliases", "bareAliases", "bareBase", "bareEtc", "base", "dockerPostStart",
                   "extra", "firewall", "offAliases", "offEtc", "offFirewall", "offPackages",
                   "offServices", "offSudoRules", "offTmpfiles", "offUsers", "packages",
-                  "presetsBase", "restoreOffServices", "services", "sudoRules",
+                  "presetsBase", "restoreOffServices", "services", "splitBase", "sudoRules",
                   "timerInterval", "tmpfiles", "users"
                 ]' "the dump no longer has the keys these checks read"
+
+                # Split tunnelling: one direct rule per field, wildcards as a path regex, DNS
+                # steered for the process fields only
+                want '.splitBase | fromjson | .route.rules[-4] == {"process_name": ["firefox"], "outbound": "direct"}' "split names never reached routing"
+                want '.splitBase | fromjson | .route.rules[-3] == {"process_path": ["/usr/bin/steam"], "outbound": "direct"}' "split paths never reached routing"
+                want '.splitBase | fromjson | .route.rules[-2] == {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "outbound": "direct"}' "split wildcards were not rendered as a path regex"
+                want '.splitBase | fromjson | .route.rules[-1] == {"ip_cidr": ["10.0.0.0/8"], "outbound": "direct"}' "split addresses never reached routing"
+                want '.splitBase | fromjson | .dns.rules == [{"process_name": ["firefox"], "server": "bootstrap"}, {"process_path": ["/usr/bin/steam"], "server": "bootstrap"}, {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "server": "bootstrap"}]' "split DNS rules drifted"
+                want '.bareBase | fromjson | .route.rules | map(select(has("process_name") or has("process_path") or has("ip_cidr"))) == []' "a bare base carries split rules"
 
                 # Every policy knob has to reach the rendered base, or it is decoration
                 want '.base | fromjson | .dns.rules[0].domain_suffix == [".ru", ".su"]' "zones never reached DNS"
@@ -259,6 +271,7 @@
                 want '.enabledBroken == []' "an enabled module breaks the system"
                 want '.enabledBase | fromjson | .route.final == "proxy"' "the base did not survive the real module set"
                 want '.enabledBase | fromjson | .inbounds[0].route_exclude_address | length == 2' "the tailnet exclusion did not survive"
+                want '.enabledBase | fromjson | .route.rules | any(.process_name == ["firefox"])' "the split list did not survive the real module set"
                 want '.dockerFollowBase | fromjson | .inbounds[0].route_exclude_address == ["10.42.0.0/16"]' "docker address pools did not follow the host docker settings"
                 want '.dockerFollowBase | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "docker default bridge is not excluded"
                 want '.enabledExtra | fromjson | .log.level == "debug"' "extraSettings did not survive"
