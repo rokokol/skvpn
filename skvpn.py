@@ -712,6 +712,25 @@ def domain_value(value):
     return value
 
 
+def domain_shown(value):
+    """The domain as a person reads it, with the wire form beside it when they differ:
+    `пример.рф (xn--e1afmkfd.xn--p1ai)`. The file keeps the wire form — DNS carries
+    nothing else — and this only ever changes how it is printed."""
+    try:
+        labels = [
+            label.encode("ascii").decode("idna") if label.startswith("xn--") else label
+            for label in value.lstrip(".").split(".")
+        ]
+    except UnicodeError:
+        return value
+    readable = ("." if value.startswith(".") else "") + ".".join(labels)
+    return value if readable == value else f"{readable} ({value})"
+
+
+def split_shown(kind, value):
+    return domain_shown(value) if kind == "domain" else value
+
+
 def split_check(kind, value):
     if kind == "domain":
         return domain_value(value)
@@ -759,10 +778,10 @@ def cmd_split(args):
         own = split_load()
         for kind in SPLIT_SHOWN:
             for value in declared[kind]:
-                print(f"  {kind:<5} {value:<40} declared")
+                print(f"  {kind:<5} {split_shown(kind, value):<40} declared")
             for value in own[kind]:
                 if value not in declared[kind]:
-                    print(f"  {kind:<5} {value}")
+                    print(f"  {kind:<5} {split_shown(kind, value)}")
         return
     if args[0] not in ("add", "rm"):
         die(SPLIT_USAGE)

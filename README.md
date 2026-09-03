@@ -53,7 +53,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn boot [<name> \| last]` | pin a profile for boot regardless of what is up; `last` goes back to following `up`; no argument shows the choice |
 | `skvpn split add [name\|path\|ip\|domain] <value>…` | route a process (by name, the default), an executable (absolute path), an address/CIDR or a site (a bare name, a URL or `*.example.com`) around the tunnel; asks for a `skvpn restart` |
 | `skvpn split rm [name\|path\|ip\|domain] <value>…` | drop split entries; same reminder |
-| `skvpn split [ls]` | both split lists — the declared one marked `declared`, then the one `add` edits; no root |
+| `skvpn split [ls]` | both split lists — the declared one marked `declared`, then the one `add` edits; an IDN shows as a person reads it with the wire form beside it, `пример.рф (xn--e1afmkfd.xn--p1ai)`; no root |
 | `skvpn ping [--servers] [<name>…]` | latency to the ping site through every profile, or the named ones, without switching: one throwaway sing-box carries them all; `--servers` adds the addresses |
 | `skvpn ping set <host\|url>` | the site to reach for; a bare host becomes `https://host/`, https only — sing-box's test quietly swaps a plain-http site for its own; default `https://www.google.com/generate_204` |
 | `skvpn status --ping [--servers]` | the status lines, then the ping table |

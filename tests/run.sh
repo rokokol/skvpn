@@ -457,16 +457,19 @@ sv split add domain '*.cdn.example.net' >/dev/null
 sv split add domain 'пример.рф' >/dev/null
 sv split add domain '.by' >/dev/null
 file=$(split_file)
+# The file keeps the wire form; ls reads it back for a person, wire form in brackets
 want="  domain $(printf '%-40s' .ru) declared
   domain $(printf '%-40s' .su) declared
   domain example.com
   domain .cdn.example.net
-  domain xn--e1afmkfd.xn--p1ai
+  domain пример.рф (xn--e1afmkfd.xn--p1ai)
   domain .by"
 if jq -e '.route.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "outbound": "direct"}]' "$file" >/dev/null &&
   jq -e '.dns.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "action": "route", "server": "bootstrap"}]' "$file" >/dev/null &&
   [[ "$(sv split ls)" == "$want" ]] &&
   sv split rm domain example.com >/dev/null &&
+  sv split rm domain 'пример.рф' >/dev/null &&
+  ! grep -q xn--e1afmkfd "$file" &&
   ! sv split add domain 'not a domain' >/dev/null 2>&1 &&
   ! sv split add domain 'localhost' >/dev/null 2>&1 &&
   ! sv split add domain 'by' >/dev/null 2>&1; then
