@@ -19,8 +19,13 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - the base turns on `dns.reverse_mapping`: a connection that carries no name of its own — a Minecraft server, any binary protocol the sniffer cannot read — used to miss every domain rule and go through the tunnel, because only HTTP and TLS ever had a name to match; now the name the client resolved is handed back to its connection. Found live: a game server listed as a split domain stayed inside the tunnel while listing the game's process worked
 - the NixOS unit now grants `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` like upstream's template unit does: matching a connection to a process reads other users' `/proc/<pid>/fd` and `exe`, and without them every process rule was a silent no-op — the installer's drop-in adds the same two for a distribution whose unit trims them, and the distro suite now runs its fixture sing-box as the service user with the unit's capabilities instead of root, so this cannot pass by accident again
 
+### Removed
+
+- the `--uninstall` fallback for installs made before the manifest existed (skvpn < 1.1), which guessed a fixed file list: an install with a binary but no manifest is now named and left alone, with a pointer at the old version's uninstaller — checked before any unit is stopped or sysctl restored, and a second `--uninstall` after a clean one stays quiet
+
 ### Changed
 
+- DNS rules are written in sing-box's action form, `action: route` with the server, rather than the bare `server` field deprecated in 1.11 — the same rules, in the shape the current documentation gives them
 - **`skvpn ls` no longer prints the nodes' addresses by default** — a node's address is part of what the profile keeps private, and a pasted table should not carry it; `--servers` adds the column, on `ls`, `ping` and `status --ping` alike
 - `skvpn status` shows the `on boot` line only while the restore unit is enabled — with `restore.enable = false` or an install made with `--no-restore` the choice is kept but not what boot does — and spells out `(last up)` when the line is following `up` rather than a pin
 - **a re-install keeps the tunnel up**: the installer restarts each active `sing-box@<profile>` by name instead of a glob `try-restart`, watches it stay active for `RESTART_SETTLE_TICKS` half-seconds, and on failure puts the previous `base.d` files and drop-in back, restarts the instance onto them, prints the unit's journal and exits nonzero — the boot choice and profiles are never touched

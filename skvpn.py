@@ -660,7 +660,7 @@ def split_save(lists):
     # A bypassed process or domain should resolve outside the tunnel too, like the
     # base's direct zones; addresses have no DNS side
     dns = [
-        {field: values, "server": "bootstrap"}
+        {field: values, "action": "route", "server": "bootstrap"}
         for field, values in fields
         if values and field != "ip_cidr"
     ]

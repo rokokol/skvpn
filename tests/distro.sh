@@ -70,8 +70,9 @@ assert {"process_name": ["curl"], "outbound": "direct"} in rules, rules
 assert {"process_path_regex": ["^/opt/[^/]*/bin/tor$"], "outbound": "direct"} in rules, rules
 assert {"ip_cidr": ["10.99.0.0/16"], "outbound": "direct"} in rules, rules
 assert {"domain_suffix": ["ubuntu.com"], "outbound": "direct"} in rules, rules
-assert {"process_name": ["curl"], "server": "bootstrap"} in base["dns"]["rules"]
-assert {"domain_suffix": ["ubuntu.com"], "server": "bootstrap"} in base["dns"]["rules"]
+dns = base["dns"]["rules"]
+assert {"process_name": ["curl"], "action": "route", "server": "bootstrap"} in dns, dns
+assert {"domain_suffix": ["ubuntu.com"], "action": "route", "server": "bootstrap"} in dns, dns
 EOF
   # The declared list is what `split ls` reads back, marked as not its own
   "$prefix/bin/skvpn" split ls | grep -qE '^  name +curl +declared$'

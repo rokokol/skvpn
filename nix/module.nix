@@ -159,23 +159,28 @@ let
       rules =
         lib.optional (directZones != [ ]) {
           domain_suffix = directZones;
+          action = "route";
           server = "bootstrap";
         }
         ++ lib.optional (directGeosite != { }) {
           rule_set = lib.attrNames directGeosite;
+          action = "route";
           server = "bootstrap";
         }
         # A bypassed process resolves outside the tunnel too; addresses have no DNS side
         ++ lib.optional (splitNames != [ ]) {
           process_name = splitNames;
+          action = "route";
           server = "bootstrap";
         }
         ++ lib.optional (splitPaths != [ ]) {
           process_path = splitPaths;
+          action = "route";
           server = "bootstrap";
         }
         ++ lib.optional (splitRegex != [ ]) {
           process_path_regex = splitRegex;
+          action = "route";
           server = "bootstrap";
         };
       final = "remote";

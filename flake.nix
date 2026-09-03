@@ -184,7 +184,9 @@
                 want '.splitBase | fromjson | .route.rules[-3] == {"process_path": ["/usr/bin/steam"], "outbound": "direct"}' "split paths never reached routing"
                 want '.splitBase | fromjson | .route.rules[-2] == {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "outbound": "direct"}' "split wildcards were not rendered as a path regex"
                 want '.splitBase | fromjson | .route.rules[-1] == {"ip_cidr": ["10.0.0.0/8"], "outbound": "direct"}' "split addresses never reached routing"
-                want '.splitBase | fromjson | .dns.rules == [{"process_name": ["firefox"], "server": "bootstrap"}, {"process_path": ["/usr/bin/steam"], "server": "bootstrap"}, {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "server": "bootstrap"}]' "split DNS rules drifted"
+                want '.splitBase | fromjson | .dns.rules == [{"process_name": ["firefox"], "action": "route", "server": "bootstrap"}, {"process_path": ["/usr/bin/steam"], "action": "route", "server": "bootstrap"}, {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "action": "route", "server": "bootstrap"}]' "split DNS rules drifted"
+                # The action form, not the legacy bare `server` sing-box deprecated in 1.11
+                want '.base | fromjson | .dns.rules | all(.action == "route")' "a DNS rule is in the legacy form"
                 want '.bareBase | fromjson | .route.rules | map(select(has("process_name") or has("process_path") or has("ip_cidr"))) == []' "a bare base carries split rules"
 
                 # Every policy knob has to reach the rendered base, or it is decoration

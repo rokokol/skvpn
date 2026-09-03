@@ -366,6 +366,14 @@ collect_active_units() {
 }
 
 if ((UNINSTALL)); then
+  # The manifest is the only record of what was written. An install older than 1.1 has
+  # none, and guessing its file list is what the old fallback did; that arm is gone, so
+  # such an install is named and left alone rather than half-removed. Nothing installed
+  # at all is not an error — a second --uninstall must stay quiet
+  if [[ ! -f "$manifest_file" && -e "$root/bin/skvpn" ]]; then
+    echo "install.sh: $root/bin/skvpn is installed but $manifest_file is missing — an install older than 1.1 kept no manifest; remove it with that version's install.sh --uninstall" >&2
+    exit 1
+  fi
   managed=0
   if ((! live)) || [[ -f "$managed_state" ]]; then
     managed=1
@@ -387,24 +395,6 @@ if ((UNINSTALL)); then
       rm -f "${DESTDIR%/}$path"
     done <"$manifest_file"
     rm -f "$manifest_file"
-  else
-    # Installs made before the manifest existed (skvpn < 1.1): the fixed list those
-    # versions wrote. Drop this arm one release after 1.1
-    if ((managed)); then
-      rm -f \
-        "$base_config" \
-        "$extra_config" \
-        "$sing_box_dropin" \
-        "$unit_root/skvpn-restore.service" \
-        "$unit_root/skvpn-sync.service" \
-        "$unit_root/skvpn-sync.timer" \
-        "$sudoers_file" \
-        "$profile_file"
-    fi
-    rm -f \
-      "$root/bin/skvpn" \
-      "$root/share/bash-completion/completions/skvpn" \
-      "$root/share/zsh/site-functions/_skvpn"
   fi
   rm -f "$managed_state"
   rmdir "$unit_root/sing-box@.service.d" "$state_root" "$root/share/skvpn" \

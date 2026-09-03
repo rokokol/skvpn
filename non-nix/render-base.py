@@ -185,18 +185,26 @@ split_paths = [v for v in all_paths if not is_glob(v)]
 split_regex = [glob_regex("name", v) for v in all_names if is_glob(v)]
 split_regex += [glob_regex("path", v) for v in all_paths if is_glob(v)]
 split_ips = list(dict.fromkeys(args.split_ip))
+
+
+def bootstrap_rule(field, values):
+    """A DNS rule steering `values` to the local resolver, in sing-box's action form —
+    the bare `server` field is the legacy shape deprecated in 1.11"""
+    return {field: values, "action": "route", "server": "bootstrap"}
+
+
 dns_rules = []
 if zones:
-    dns_rules.append({"domain_suffix": zones, "server": "bootstrap"})
+    dns_rules.append(bootstrap_rule("domain_suffix", zones))
 if geosite_tags:
-    dns_rules.append({"rule_set": geosite_tags, "server": "bootstrap"})
+    dns_rules.append(bootstrap_rule("rule_set", geosite_tags))
 # A bypassed process resolves outside the tunnel too; addresses have no DNS side
 if split_names:
-    dns_rules.append({"process_name": split_names, "server": "bootstrap"})
+    dns_rules.append(bootstrap_rule("process_name", split_names))
 if split_paths:
-    dns_rules.append({"process_path": split_paths, "server": "bootstrap"})
+    dns_rules.append(bootstrap_rule("process_path", split_paths))
 if split_regex:
-    dns_rules.append({"process_path_regex": split_regex, "server": "bootstrap"})
+    dns_rules.append(bootstrap_rule("process_path_regex", split_regex))
 
 inbound = {
     "type": "tun",

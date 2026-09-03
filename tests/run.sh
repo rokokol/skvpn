@@ -464,7 +464,7 @@ want="  domain $(printf '%-40s' .ru) declared
   domain xn--e1afmkfd.xn--p1ai
   domain .by"
 if jq -e '.route.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "outbound": "direct"}]' "$file" >/dev/null &&
-  jq -e '.dns.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "server": "bootstrap"}]' "$file" >/dev/null &&
+  jq -e '.dns.rules == [{"domain_suffix": ["example.com", ".cdn.example.net", "xn--e1afmkfd.xn--p1ai", ".by"], "action": "route", "server": "bootstrap"}]' "$file" >/dev/null &&
   [[ "$(sv split ls)" == "$want" ]] &&
   sv split rm domain example.com >/dev/null &&
   ! sv split add domain 'not a domain' >/dev/null 2>&1 &&
@@ -830,8 +830,9 @@ if jq -e '
   jq -e '.route.rules[-3] == {"process_name": ["firefox", "ip"], "outbound": "direct"}' "$base" >/dev/null &&
   jq -e '.route.rules[-2] == {"process_path": ["/usr/bin/steam"], "outbound": "direct"}' "$base" >/dev/null &&
   jq -e '.route.rules[-1] == {"ip_cidr": ["10.0.0.0/8"], "outbound": "direct"}' "$base" >/dev/null &&
-  jq -e '.dns.rules[-2] == {"process_name": ["firefox", "ip"], "server": "bootstrap"}' "$base" >/dev/null &&
-  jq -e '.dns.rules[-1] == {"process_path": ["/usr/bin/steam"], "server": "bootstrap"}' "$base" >/dev/null &&
+  jq -e '.dns.rules[-2] == {"process_name": ["firefox", "ip"], "action": "route", "server": "bootstrap"}' "$base" >/dev/null &&
+  jq -e '.dns.rules[-1] == {"process_path": ["/usr/bin/steam"], "action": "route", "server": "bootstrap"}' "$base" >/dev/null &&
+  jq -e '.dns.rules | all(.action == "route")' "$base" >/dev/null &&
   jq -e '.route.rule_set | map(.tag) | sort == ["custom-ip", "geoip-ru", "geosite-ru"]' "$base" >/dev/null &&
   jq -e '.route.rule_set | map(select(.tag == "geosite-ru"))[0].path == "/rules/site.srs"' "$base" >/dev/null &&
   grep -q '^OnCalendar=weekly$' "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-sync.timer" &&
@@ -1042,9 +1043,10 @@ else
   fail "uninstall did not consume the manifest, restore policy, or repeat quietly"
 fi
 
-# Installs made before the manifest existed: --uninstall still takes them out by the
-# fixed list. This arm leaves one release after 1.1
-world uninstall-falls-back-without-a-manifest
+# An install with no manifest is one older than 1.1: the fixed-list fallback that used
+# to guess its files is gone, so it is named and left alone — before anything else is
+# touched, so the refusal stops no unit and restores no sysctl
+world uninstall-refuses-an-install-without-a-manifest
 export SYSCTL_STATE="$SKVPN_ROOT/rp-filter"
 printf '0\n' >"$SYSCTL_STATE"
 installer_env=(
@@ -1057,15 +1059,17 @@ installer_env=(
   "PROFILES_OWNER=$(id -un)"
   "PROFILES_MODE=755"
 )
-env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" >/dev/null
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --fix-discord-voice >/dev/null
 rm -rf "$SKVPN_ROOT/usr/share/skvpn"
-env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall >/dev/null
-if [[ ! -e "$SKVPN_ROOT/usr/bin/skvpn" &&
-  ! -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
-  ! -e "$SKVPN_ROOT/systemd/skvpn-sync.timer" ]]; then
+: >"$SYSTEMCTL_LOG"
+if out=$(env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall 2>&1); then
+  fail "an install without a manifest was uninstalled by guesswork"
+elif [[ "$out" == *"older than 1.1"* && -e "$SKVPN_ROOT/usr/bin/skvpn" &&
+  -e "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" &&
+  "$(<"$SYSCTL_STATE")" == 2 && -z "$(<"$SYSTEMCTL_LOG")" ]]; then
   ok
 else
-  fail "an install without a manifest could not be uninstalled"
+  fail "the refusal did not name the cause, or touched the system before refusing"
 fi
 
 world installer-renders-docker-exclusion
