@@ -248,6 +248,8 @@ config = {
         "rules": dns_rules,
         "final": "remote",
         "strategy": "ipv4_only",
+        # A connection with no name of its own still meets the domain rules
+        "reverse_mapping": True,
     },
     "inbounds": [inbound],
     "outbounds": [{"type": "direct", "tag": "direct"}],

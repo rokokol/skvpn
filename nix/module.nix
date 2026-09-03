@@ -180,6 +180,10 @@ let
         };
       final = "remote";
       strategy = "ipv4_only";
+      # Remember which name each answered address stood for, so a connection that
+      # carries no name of its own — a game server, anything the sniffer cannot read —
+      # still meets the domain rules. Without it only HTTP and TLS ever had a name
+      reverse_mapping = true;
     };
 
     inbounds = [

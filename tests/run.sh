@@ -850,7 +850,8 @@ world installer-drops-the-tun-ipv6-address
 base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
 if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "system"' \
   "$base" >/dev/null &&
-  jq -e '.route.rules | length == 3' "$base" >/dev/null; then
+  jq -e '.route.rules | length == 3' "$base" >/dev/null &&
+  jq -e '.dns.reverse_mapping == true' "$base" >/dev/null; then
   ok
 else
   fail "--no-ipv6 left the TUN a v6 address, the default stack drifted, or a rule came from nowhere"

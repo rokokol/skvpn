@@ -121,6 +121,22 @@ split_smoke() {
     echo "  !! an unlisted process got an answer past the blocking outbound" >&2
     return 1
   fi
+  # The same split domain with a request the sniffer cannot read — no Host, no TLS, the
+  # shape of a game or any binary protocol. The connection carries no name, so only the
+  # reverse mapping of the DNS answer can match it to the domain rule; the server's
+  # 400 is the proof it got out
+  # shellcheck disable=SC2016
+  bash_blind() {
+    timeout 15 bash -c '
+      exec 3<>"/dev/tcp/$1/80" || exit 1
+      printf "NOTHTTP\r\n\r\n" >&3
+      read -t 10 -r line <&3 && [[ -n "$line" ]]
+    ' _ "$1" 2>/dev/null
+  }
+  bash_blind archive.ubuntu.com || bash_blind archive.ubuntu.com || {
+    echo "  !! a nameless connection to a split domain got no answer — reverse mapping is off" >&2
+    return 1
+  }
 }
 
 # The probe sing-box runs while the blocking TUN is up: DIRECT answers in milliseconds

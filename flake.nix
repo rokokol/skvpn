@@ -189,6 +189,7 @@
 
                 # Every policy knob has to reach the rendered base, or it is decoration
                 want '.base | fromjson | .dns.rules[0].domain_suffix == [".ru", ".su"]' "zones never reached DNS"
+                want '.bareBase | fromjson | .dns.reverse_mapping == true' "a nameless connection would miss every domain rule"
                 want '.base | fromjson | .dns.rules[1].rule_set == ["geosite-test"]' "geosite never reached DNS"
                 want '.base | fromjson | .route.rules[-1].rule_set == ["geosite-test", "geoip-test"]' "rule-sets never reached routing"
                 want '.base | fromjson | .route.rules[-2].domain_suffix == [".ru", ".su"]' "zones never reached routing"
