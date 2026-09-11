@@ -1,4 +1,4 @@
-# Zsh completion for ./install.sh. Sourced from the checkout, not installed:
+# Zsh completion for ./install.sh of skvpn. Sourced from the checkout, not installed:
 #   source completions/install.sh.zsh
 # Defines the function and registers it directly — no fpath, no rehash; needs compinit
 # to have run, which every interactive zsh with completion already has.
