@@ -9,10 +9,6 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - `install.sh` now exits 2, not 1, on a usage error — an unknown flag, a relative `--prefix`/`--destdir`/`SYSCONFDIR`/`LOCALSTATEDIR`/`SYSTEMD_UNITDIR`, a value flag given no value, or `--uninstall` combined with a configuration flag — and `--help` ends with the `Exit` sentence naming every code it can produce; a missing dependency in the preflight still exits 1
 - `install.sh`'s completions are now drift-checked against it by the vendored [bash-best-practices](https://github.com/rokokol/bash-best-practices-skill) `check-sh.sh -c`, replacing `tests/check-completions.sh`
 
-### Fixed
-
-- `completions/install.sh.bash` no longer uses `mapfile`, which the bash 3.2 a stock macOS ships does not have, so sourcing the completion there no longer fails with "mapfile: command not found"
-
 ## [2.0.0] - 2026-09-03
 
 ### Added
