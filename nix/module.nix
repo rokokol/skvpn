@@ -570,10 +570,8 @@ in
       serviceConfig = {
         User = "sing-box";
         StateDirectory = "sing-box-%i";
-        # Upstream's own set. The last two are what a process rule runs on: matching a
-        # connection to a process means reading /proc/<pid>/fd and exe of another user's
-        # processes, and without them the lookup finds nothing and every split entry is
-        # silently a no-op
+        # Upstream's own set. The last two are what a process rule runs on; without them
+        # every split entry is silently a no-op (PITFALLS.md)
         CapabilityBoundingSet = [
           "CAP_NET_ADMIN"
           "CAP_NET_RAW"

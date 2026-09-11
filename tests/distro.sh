@@ -215,9 +215,9 @@ EOF
   # The real merge of base, extra and the imperative split file, judged by the real
   # sing-box — a field its build does not know refuses the lot right here
   sing-box check -C /etc/sing-box/base.d -c /tmp/skvpn-block-profile.json
-  # As the unit would run it: the service user with the unit's capabilities, not root.
-  # Process rules live or die on CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH — a fixture run
-  # as root would match processes the unit never could, and pass for the wrong reason
+  # As the unit would run it: the service user with the unit's capabilities, not root,
+  # which would match processes the unit never could and pass for the wrong reason
+  # (PITFALLS.md)
   local caps=+net_admin,+net_raw,+net_bind_service,+sys_ptrace,+dac_read_search
   install -d -o sing-box -g sing-box /tmp/skvpn-sing-box
   chmod 644 /tmp/skvpn-block-profile.json
@@ -237,6 +237,7 @@ EOF
   done
   [[ -e /sys/class/net/skvpn-tun ]] || return 1
 
+  # The resolver is named: the engine would otherwise copy the observer's (PITFALLS.md)
   DOCKER_HOST=$docker_host docker run --rm --dns 1.1.1.1 ubuntu:latest bash -euc '
     for attempt in 1 2; do
       rm -rf /var/lib/apt/lists/* /tmp/ca-certificates_*.deb
@@ -291,9 +292,7 @@ if [[ "${1:-}" != "--inside" ]]; then
     # One retry on the pull: a mirror hiccup is not a verdict on anything
     "$engine" pull -q "$image" >/dev/null || "$engine" pull -q "$image" >/dev/null
     # The checkout goes in read-only — the run must not be able to edit it. The resolver
-    # is named because the engine would otherwise copy the observer's: a developer's host
-    # running skvpn lists its own TUN's DNS there, and inside the container that address
-    # is the fixture's blocking TUN — every direct lookup would sink into it
+    # is named because the engine would otherwise copy the observer's (PITFALLS.md)
     if ! "$engine" run --rm --privileged --dns 1.1.1.1 -v "$REPO:/src:ro" "$image" \
       bash /src/tests/distro.sh --inside "$distro"; then
       printf '  %s: FAILED\n' "$distro"

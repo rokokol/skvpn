@@ -364,9 +364,8 @@ def probe_config(names, port):
         # The system resolver, as the base's own bootstrap: it only ever resolves the
         # nodes' hostnames — the site's name travels to the node and is resolved there,
         # the way it does through the tunnel — so no resolver of the probe's own could
-        # be blocked on the way. ipv4_only as in the base, and not for taste: an AAAA
-        # query that never comes back holds the lookup for seconds, and the delay test's
-        # budget is spent waiting on it before a single packet reaches the site
+        # be blocked on the way. ipv4_only as in the base, and not for taste: an
+        # unanswered AAAA query spends the delay test's whole budget (PITFALLS.md)
         "dns": {
             "servers": [{"tag": "bootstrap", "type": "local"}],
             "final": "bootstrap",
@@ -375,6 +374,9 @@ def probe_config(names, port):
         "outbounds": outbounds,
         "route": {
             "auto_detect_interface": True,
+            # The TUN's output mark, so the probe's sockets leave through the physical
+            # interface like the active sing-box's own; without it every delay would be
+            # measured inside the active tunnel
             "default_mark": redirect_mark(),
             "default_domain_resolver": "bootstrap",
         },

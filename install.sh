@@ -549,10 +549,8 @@ else
   install -d -m755 "$profiles_dir"
 fi
 
-# The capabilities are the ones a process rule runs on: the lookup reads /proc/<pid>/fd
-# and exe of other users' processes. Upstream's unit carries them; a distribution's
-# trimmed one would make every split entry a silent no-op, and these lines merge into
-# whatever the unit already grants
+# The two capabilities a process rule runs on, which a distribution's trimmed unit may
+# lack (PITFALLS.md); these lines merge into whatever the unit already grants
 install -Dm644 /dev/stdin "$sing_box_dropin" <<EOF
 [Service]
 ExecStart=
