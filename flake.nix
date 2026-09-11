@@ -59,6 +59,10 @@
         name = "skvpn-tests";
         path = ./tests;
       };
+      checkSh = builtins.path {
+        name = "check-sh.sh";
+        path = ./check-sh.sh;
+      };
     in
     {
       packages = forAllSystems (pkgs: {
@@ -320,7 +324,7 @@
                 ];
               }
               ''
-                files="${installer} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/docker-routing.sh ${testsDir}/check-completions.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash"
+                files="${installer} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/docker-routing.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash ${checkSh}"
                 # shellcheck disable=SC2086
                 shellcheck $files
                 # shellcheck disable=SC2086
@@ -330,12 +334,13 @@
                 zsh -n ${completionsDir}/install.sh.zsh
                 flake8 --max-line-length=88 ${nonNixDir}/render-base.py
 
-                # install.sh and its completions must not drift apart
-                mkdir -p repo/tests
+                # install.sh, its help and its completions must not drift apart
+                mkdir -p repo
                 cp ${installer} repo/install.sh
+                cp ${versionFile} repo/VERSION
                 cp -r ${completionsDir} repo/completions
-                cp ${testsDir}/check-completions.sh repo/tests/
-                bash repo/tests/check-completions.sh
+                cp ${checkSh} repo/check-sh.sh
+                (cd repo && bash ./check-sh.sh -c completions/install.sh.bash completions/install.sh.zsh install.sh)
                 touch $out
               '';
         }

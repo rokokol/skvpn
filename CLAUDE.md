@@ -25,7 +25,9 @@ skvpn.py             the CLI
 VERSION              the one place the version lives — package.nix, --version and CI read it
 completions/         skvpn.bash, _skvpn and the install.sh completions, spelled by hand
 nix/                 package.nix, module.nix, module-test.nix, nixos-eval.nix
-tests/               run.sh, distro.sh, check-completions.sh, stubs, golden parser outputs
+check-sh.sh          vendored from bash-best-practices, holds install.sh's help and
+                     completions to its parser
+tests/               run.sh, distro.sh, stubs, golden parser outputs
 install.sh           installer and option parser for systems without Nix
 non-nix/             renderer for the non-Nix base config
 PITFALLS.md          traps in sing-box and the tools around it
@@ -35,7 +37,7 @@ DEVIATIONS.md        where this repo departs on purpose from its family's route
 ## Things that will bite
 
 - **`SKVPN_ROOT` relocates every path at once** — that is the whole test strategy: no root, no live `/etc/sing-box`, and the suite stubs `systemctl` so "what is running" is its decision. The stub guard refuses to start unless every stub is executable and first on `PATH`
-- **the completion command lists are hand-written on purpose** and the suite checks them against `skvpn.COMMANDS` — a command added to the CLI fails the tests until it lands in both completion files; why these two are not held by `check-sh.sh` like the rest of the family is in `DEVIATIONS.md`. The same holds for install.sh: `tests/check-completions.sh` diffs its `case` patterns against both `completions/install.sh.*` files in `scripts-lint`
+- **the completion command lists are hand-written on purpose** and the suite checks them against `skvpn.COMMANDS` — a command added to the CLI fails the tests until it lands in both completion files; why these two are not held by `check-sh.sh` like the rest of the family is in `DEVIATIONS.md`. The same holds for install.sh: the vendored [bash-best-practices](https://github.com/rokokol/bash-best-practices-skill) `check-sh.sh -c` diffs its dispatcher and parsers against both `completions/install.sh.*` files, and its `--help`, in `scripts-lint`
 - **install.sh is declarative** — a run converges the system to exactly the flags given, and every file it writes lands in `share/skvpn/install-manifest`, which is what `--uninstall` consumes. The preflight's runnable guidance lines are printed as `  $ command` and `tests/distro.sh` executes exactly those lines — change the format and the distro suite goes blind
 - **profile names are public, contents are not.** The profiles directory is `2755` so `ls --names` (and completion through it) works without root; the files stay `0640` because they carry node credentials. `cmd_ls` must keep treating a per-file `PermissionError` as "try sudo", not as a crash
 - **the subscription tests run on `file://` URLs** — `urlopen` speaks the scheme, which is what lets sync's prune/spare logic run offline. The real fetch sends a custom `User-Agent`: the stock `Python-urllib` one gets 403 from Cloudflare bot rules
