@@ -862,14 +862,61 @@ else
 fi
 
 world installer-rejects-bad-split-values
-if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split ip not-an-ip >/dev/null 2>&1 ||
-  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split path relative/bin >/dev/null 2>&1 ||
-  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split >/dev/null 2>&1; then
-  fail "an invalid split value was accepted"
-elif [[ ! -e "$SKVPN_ROOT/stage/usr/local/bin/skvpn" ]]; then
-  ok
+rc=0
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split ip not-an-ip >/dev/null 2>&1 || rc=$?
+if ((rc != 2)); then
+  fail "--split ip not-an-ip exited $rc, not the usage-error code 2"
 else
-  fail "an invalid split value left a partial installation"
+  rc=0
+  "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split path relative/bin >/dev/null 2>&1 || rc=$?
+  if ((rc != 2)); then
+    fail "--split path relative/bin exited $rc, not the usage-error code 2"
+  else
+    rc=0
+    "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --split >/dev/null 2>&1 || rc=$?
+    if ((rc == 2)) && [[ ! -e "$SKVPN_ROOT/stage/usr/local/bin/skvpn" ]]; then
+      ok
+    else
+      fail "a bare --split exited $rc, not the usage-error code 2, or left a partial installation"
+    fi
+  fi
+fi
+
+# An unknown flag, a relative directory, a value flag given no value, and --uninstall
+# combined with a configuration flag are all requests that were simply malformed, so
+# every one of them answers 2 through install.sh's own die() — never 1, the family's
+# finding-printed code
+world installer-refuses-bad-arguments-with-exit-2
+rc=0
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --no-such-flag >/dev/null 2>&1 || rc=$?
+if ((rc != 2)); then
+  fail "an unknown flag exited $rc, not the usage-error code 2"
+else
+  rc=0
+  "$REPO/install.sh" --prefix relative/path >/dev/null 2>&1 || rc=$?
+  if ((rc != 2)); then
+    fail "a relative --prefix exited $rc, not the usage-error code 2"
+  else
+    rc=0
+    "$REPO/install.sh" --destdir >/dev/null 2>&1 || rc=$?
+    if ((rc != 2)); then
+      fail "--destdir with no value exited $rc, not the usage-error code 2"
+    else
+      rc=0
+      "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --uninstall --fix-discord-voice >/dev/null 2>&1 || rc=$?
+      if ((rc != 2)); then
+        fail "--uninstall combined with --fix-discord-voice exited $rc, not the usage-error code 2"
+      else
+        rc=0
+        "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --uninstall --tailscale >/dev/null 2>&1 || rc=$?
+        if ((rc == 2)); then
+          ok
+        else
+          fail "--uninstall combined with --tailscale exited $rc, not the usage-error code 2"
+        fi
+      fi
+    fi
+  fi
 fi
 
 world installer-help-lists-every-feature
@@ -909,8 +956,12 @@ installer_env=(
 # The guidance lines are matched whole (grep -qxF): the harness that runs them in the
 # distro tests extracts exactly these, so a substring match here could bless a line
 # nobody can actually type
-if out=$(env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
+rc=0
+out=$(env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1) || rc=$?
+if ((rc == 0)); then
   fail "installation continued with missing runtime dependencies"
+elif ((rc != 1)); then
+  fail "the preflight exited $rc, not the missing-dependency code 1"
 elif [[ "$out" == *"sing-box ($SKVPN_ROOT/missing-sing-box)"* &&
   "$out" == *"sing-box@.service"* &&
   "$out" == *"sing-box service user (missing-sing-box-user)"* &&
@@ -925,9 +976,13 @@ fi
 
 world installer-gives-arch-package-command
 printf 'ID=cachyos\nID_LIKE=arch\n' >"$SKVPN_ROOT/os-release"
-if out=$(OS_RELEASE="$SKVPN_ROOT/os-release" SING_BOX="$SKVPN_ROOT/missing" \
-  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1); then
+rc=0
+out=$(OS_RELEASE="$SKVPN_ROOT/os-release" SING_BOX="$SKVPN_ROOT/missing" \
+  "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" 2>&1) || rc=$?
+if ((rc == 0)); then
   fail "installation continued without sing-box on CachyOS"
+elif ((rc != 1)); then
+  fail "the preflight exited $rc, not the missing-dependency code 1"
 elif grep -qxF '  $ sudo pacman -S --needed sing-box' <<<"$out"; then
   ok
 else

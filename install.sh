@@ -90,17 +90,28 @@ Runtime environment (read by the installed skvpn, not this script):
   SKVPN_ROOT           relocate every path skvpn touches (default: /)
   SKVPN_SING_BOX       the sing-box binary \`skvpn ping\` starts its probe with
                        (default: the first of PATH, /run/current-system/sw/bin, /usr/bin)
+
+Exit 0 done, 1 when the install could not be made — a dependency missing, a manifest
+that cannot be written — and 2 on a usage error.
 EOF
+}
+
+die() { # the request itself is wrong
+  printf 'install.sh: %s\n' "$1" >&2
+  exit 2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix)
-      PREFIX="${2:?directory required}"
+      # Not ${2:?}: that exits 1 with bash's own message, and a usage error is 2
+      (($# >= 2)) || die "$1 needs a directory"
+      PREFIX="$2"
       shift 2
       ;;
     --destdir)
-      DESTDIR="${2:?directory required}"
+      (($# >= 2)) || die "$1 needs a directory"
+      DESTDIR="$2"
       shift 2
       ;;
     --fix-discord-voice)
@@ -124,24 +135,28 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack)
-      CONFIG_ARGS+=("$1" "${2:?value required by $1}")
+      (($# >= 2)) || die "$1 needs a value"
+      CONFIG_ARGS+=("$1" "$2")
       shift 2
       ;;
     --split)
       # A kind word is consumed only when a value follows it; the bare word is the value
       case "${2:-}" in
         name | path | ip | domain)
-          CONFIG_ARGS+=("--split-$2" "${3:?value required by --split $2}")
+          (($# >= 3)) || die "--split $2 needs a value"
+          CONFIG_ARGS+=("--split-$2" "$3")
           shift 3
           ;;
         *)
-          CONFIG_ARGS+=(--split-name "${2:?value required by --split}")
+          (($# >= 2)) || die "--split needs a value"
+          CONFIG_ARGS+=(--split-name "$2")
           shift 2
           ;;
       esac
       ;;
     --extra-settings)
-      EXTRA_SETTINGS="${2:?file required}"
+      (($# >= 2)) || die "$1 needs a file"
+      EXTRA_SETTINGS="$2"
       shift 2
       ;;
     --no-restore)
@@ -149,11 +164,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --sync-interval)
-      SYNC_INTERVAL="${2:?calendar specification required}"
+      (($# >= 2)) || die "$1 needs a calendar specification"
+      SYNC_INTERVAL="$2"
       shift 2
       ;;
     --trusted-user)
-      TRUSTED_USERS+=("${2:?user required}")
+      (($# >= 2)) || die "$1 needs a user"
+      TRUSTED_USERS+=("$2")
       shift 2
       ;;
     --uninstall)
@@ -170,29 +187,23 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       usage >&2
-      exit 1
+      exit 2
       ;;
   esac
 done
 
-if [[ "$PREFIX" != /* ]]; then
-  echo "install.sh: PREFIX must be absolute: $PREFIX" >&2
-  exit 1
-fi
-if [[ "$SYSCONFDIR" != /* || "$LOCALSTATEDIR" != /* || "$SYSTEMD_UNITDIR" != /* ]]; then
-  echo "install.sh: SYSCONFDIR, LOCALSTATEDIR, and SYSTEMD_UNITDIR must be absolute" >&2
-  exit 1
-fi
+[[ "$PREFIX" == /* ]] || die "PREFIX must be absolute: $PREFIX"
+[[ "$SYSCONFDIR" == /* ]] || die "SYSCONFDIR must be absolute: $SYSCONFDIR"
+[[ "$LOCALSTATEDIR" == /* ]] || die "LOCALSTATEDIR must be absolute: $LOCALSTATEDIR"
+[[ "$SYSTEMD_UNITDIR" == /* ]] || die "SYSTEMD_UNITDIR must be absolute: $SYSTEMD_UNITDIR"
 if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
-  echo "install.sh: --uninstall already removes the Discord voice fix" >&2
-  exit 1
+  die "--uninstall already removes the Discord voice fix"
 fi
 if ((UNINSTALL)) && {
   ((${#CONFIG_ARGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]})) ||
     [[ -n "$EXTRA_SETTINGS" || "$SYNC_INTERVAL" != daily ]]
 }; then
-  echo "install.sh: --uninstall cannot be combined with configuration options" >&2
-  exit 1
+  die "--uninstall cannot be combined with configuration options"
 fi
 
 root="${DESTDIR%/}$PREFIX"
