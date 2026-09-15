@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Drives skvpn against a scratch SKVPN_ROOT and checks what lands on disk and what reaches
-# systemd. SKVPN_ROOT relocates every path the tool touches, so nothing here needs root and
+# SKVPN_ROOT relocates every path the tool touches, so nothing here needs root and
 # nothing can name a path outside $WORK; systemctl is stubbed, so "what is running" is
-# something the suite decides rather than inherits from the machine.
-#
-# --update rewrites tests/golden from the current parser output
+# something the suite decides rather than inherits from the machine
 
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+tests/run.sh — the fast suite for skvpn: drives it against a scratch SKVPN_ROOT and
+checks what lands on disk and what reaches systemd
+
+  tests/run.sh            run the suite
+  tests/run.sh --update   rewrite tests/golden from the current parser output
+
+SKVPN picks the binary driven (default: skvpn.py next to tests/)
+
+Nothing here reaches the network
+Exit: 0 all passed, 1 a check failed
+EOF
+}
+[[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]] && {
+  usage
+  exit 0
+}
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(dirname "$HERE")
