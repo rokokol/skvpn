@@ -2,14 +2,7 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
-## [Unreleased]
-
-### Changed
-
-- `install.sh` now exits 2, not 1, on a usage error — an unknown flag, a relative `--prefix`/`--destdir`/`SYSCONFDIR`/`LOCALSTATEDIR`/`SYSTEMD_UNITDIR`, a value flag given no value, or `--uninstall` combined with a configuration flag — and `--help` ends with the `Exit` sentence naming every code it can produce; a missing dependency in the preflight still exits 1
-- `install.sh`'s completions are now drift-checked against it by the vendored [bash-best-practices](https://github.com/rokokol/bash-best-practices-skill) `check-sh.sh -c`, replacing `tests/check-completions.sh`
-
-## [2.0.0] - 2026-09-03
+## [2.0.0] - 2026-09-15
 
 ### Added
 
@@ -34,6 +27,8 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - **`skvpn ls` no longer prints the nodes' addresses by default** — a node's address is part of what the profile keeps private, and a pasted table should not carry it; `--servers` adds the column, on `ls`, `ping` and `status --ping` alike
 - `skvpn status` shows the `on boot` line only while the restore unit is enabled — with `restore.enable = false` or an install made with `--no-restore` the choice is kept but not what boot does — and spells out `(last up)` when the line is following `up` rather than a pin
 - **a re-install keeps the tunnel up**: the installer restarts each active `sing-box@<profile>` by name instead of a glob `try-restart`, watches it stay active for `RESTART_SETTLE_TICKS` half-seconds, and on failure puts the previous `base.d` files and drop-in back, restarts the instance onto them, prints the unit's journal and exits nonzero — the boot choice and profiles are never touched
+- `install.sh` now exits 2, not 1, on a usage error — an unknown flag, a relative `--prefix`/`--destdir`/`SYSCONFDIR`/`LOCALSTATEDIR`/`SYSTEMD_UNITDIR`, a value flag given no value, or `--uninstall` combined with a configuration flag — and `--help` ends with the `Exit` sentence naming every code it can produce; a missing dependency in the preflight still exits 1
+- `install.sh`'s completions are now drift-checked against it by the vendored [bash-best-practices](https://github.com/rokokol/bash-best-practices-skill) `check-sh.sh -c`, replacing `tests/check-completions.sh`
 
 ## [1.1.0] - 2026-08-31
 
