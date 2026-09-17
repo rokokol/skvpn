@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Follows the huix-standard installer grammar: references/install-sh.md in
+# https://github.com/rokokol/huix-standard-skill — declarative, so a new boolean needs its
+# undo in the sweep as much as its effect; every path created belongs in the manifest
+# --uninstall consumes; the preflight installs nothing and prints `  $ command` lines
+# tests/distro.sh executes verbatim; a new flag updates both completions/ files in the same
+# commit, or check-sh.sh -c fails the flake check
 
 set -euo pipefail
 
@@ -490,6 +496,9 @@ fi
 installed=()
 rec() { installed+=("${1#"${DESTDIR%/}"}"); }
 
+# A copy rather than the standard's relative symlink into share/skvpn: the script is the
+# whole product and derives none of its paths from its own location, so nothing but the
+# manifest and VERSION lands in share/skvpn and there is no payload for it to sit beside
 install -Dm755 "$here/skvpn.py" "$root/bin/skvpn"
 rec "$root/bin/skvpn"
 install -Dm644 "$here/completions/skvpn.bash" "$root/share/bash-completion/completions/skvpn"
