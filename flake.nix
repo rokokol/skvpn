@@ -26,7 +26,7 @@
       sing-geosite,
     }:
     let
-      lib = nixpkgs.lib;
+      inherit (nixpkgs) lib;
       # systemd units and a TUN device — there is nothing here that could work elsewhere
       systems = [
         "x86_64-linux"
@@ -139,7 +139,7 @@
             let
               skvpn = self.packages.${system}.default;
             in
-            pkgs.runCommand "package-smoke" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+            pkgs.runCommand "package-smoke" { nativeBuildInputs = with pkgs; [ gnugrep ]; } ''
               test -x ${skvpn}/bin/skvpn
               # No systemctl in the sandbox, so the usage line is how far a run can get
               (${skvpn}/bin/skvpn 2>&1 || true) | grep -F 'usage: skvpn' >/dev/null
@@ -157,7 +157,7 @@
             in
             pkgs.runCommand "module-wiring"
               {
-                nativeBuildInputs = [ pkgs.jq ];
+                nativeBuildInputs = with pkgs; [ jq ];
                 dump = builtins.toJSON wiring;
                 passAsFile = [ "dump" ];
               }
@@ -267,7 +267,7 @@
             in
             pkgs.runCommand "nixos-eval"
               {
-                nativeBuildInputs = [ pkgs.jq ];
+                nativeBuildInputs = with pkgs; [ jq ];
                 dump = builtins.toJSON real;
                 passAsFile = [ "dump" ];
               }
@@ -316,16 +316,16 @@
           scripts-lint =
             pkgs.runCommand "scripts-lint"
               {
-                nativeBuildInputs = [
+                nativeBuildInputs = with pkgs; [
                   # check-sh.sh below is moving to reading the script it is given as a tree,
                   # out of `shfmt --to-json`, with jq flattening that tree into rows. This
                   # sandbox has a scrubbed PATH, so the dev shell's jq is not reachable here
                   # and the tool has to be named on this derivation
-                  pkgs.jq
-                  pkgs.python3.pkgs.flake8
-                  pkgs.shellcheck
-                  pkgs.shfmt
-                  pkgs.zsh
+                  jq
+                  python3.pkgs.flake8
+                  shellcheck
+                  shfmt
+                  zsh
                 ];
               }
               ''
