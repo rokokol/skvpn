@@ -16,7 +16,7 @@
 
 let
   # The smallest config nixpkgs will call a system: without a root filesystem and a
-  # bootloader decision, evaluation stops before it reaches anything of ours
+  # bootloader decision, evaluation stops before it reaches anything the module defines
   base = {
     nixpkgs.hostPlatform = system;
     boot.loader.grub.enable = false;
@@ -95,7 +95,7 @@ in
   enabledRestore = enabled.systemd.services ? skvpn-restore;
   singBoxUserGroup = enabled.users.users.sing-box.group;
 
-  # Other modules add their own extraRules, so ours is fished out by its command
+  # Other modules add their own extraRules, so this one is picked out by its command
   enabledSudo = lib.filter (
     rule: lib.any (c: c.command or "" == "/run/current-system/sw/bin/skvpn") (rule.commands or [ ])
   ) enabled.security.sudo.extraRules;

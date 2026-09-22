@@ -569,8 +569,8 @@ else
   install -d -m755 "$profiles_dir"
 fi
 
-# The two capabilities a process rule runs on, which a distribution's trimmed unit may
-# lack (PITFALLS.md); these lines merge into whatever the unit already grants
+# The two capabilities a process rule needs, which a distribution's trimmed unit may lack.
+# PITFALLS.md, "A process rule is a silent no-op without two capabilities", has the rest
 install -Dm644 /dev/stdin "$sing_box_dropin" <<EOF
 [Service]
 ExecStart=

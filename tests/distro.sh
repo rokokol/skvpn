@@ -215,9 +215,9 @@ EOF
   # The real merge of base, extra and the imperative split file, judged by the real
   # sing-box — a field its build does not know refuses the lot right here
   sing-box check -C /etc/sing-box/base.d -c /tmp/skvpn-block-profile.json
-  # As the unit would run it: the service user with the unit's capabilities, not root,
-  # which would match processes the unit never could and pass for the wrong reason
-  # (PITFALLS.md)
+  # As the unit would run it: the service user with the unit's capabilities, never root.
+  # PITFALLS.md, "A process rule is a silent no-op without two capabilities", says what
+  # root would prove instead
   local caps=+net_admin,+net_raw,+net_bind_service,+sys_ptrace,+dac_read_search
   install -d -o sing-box -g sing-box /tmp/skvpn-sing-box
   chmod 644 /tmp/skvpn-block-profile.json
