@@ -783,6 +783,11 @@ proxy_only=0
       die "nothing to check in $script: no case \"\$cmd\" dispatcher, no flag arms and no bash floor or POSIX userland claim — see references/shape.md"
     proxy_only=1
   fi
+  # Under --bash-only the whole run is that proxy. No tree was read, so every check below
+  # would hold the help against an empty list, and reaching the help at all means running
+  # the script: a list of defects meant to be sourced answers 127 and prints a line per
+  # call it could not resolve
+  ((bash_only == 0)) || proxy_only=1
   # The help arm is spelled one way, so a reader and a completion can count on all three.
   # A wrapper passes `help` through to the tool behind it, whose help is the better one,
   # so it may answer -h and --help as flags before the dispatcher instead
@@ -803,7 +808,7 @@ proxy_only=0
   fi
 }
 
-known_sub() { # known_sub WORD -> 0 when the dispatcher has it, or it is the help, or the set is open
+known_sub() { # known_sub WORD -> 0 when the dispatcher has it, or it is help, or the set is open
   local s
   [[ "$1" != help ]] || return 0
   ((open_set == 0)) || return 0
