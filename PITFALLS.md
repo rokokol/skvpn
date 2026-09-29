@@ -1,10 +1,14 @@
 # Pitfalls
 
-Traps in sing-box and the tools around it that produce a plausible but wrong result. Each entry names where it bites, the misleading observation, the mechanism and the safe route
+Traps in sing-box and the tools around it that produce a plausible but wrong result. Each entry names where it bites, how to reproduce it, the misleading observation, the mechanism and the safe route
+
+---
 
 ## A process rule is a silent no-op without two capabilities
 
 **Where it bites:** the unit that runs a profile — `serviceConfig` in `nix/module.nix`, the drop-in `install.sh` writes beside the distribution's unit, and the fixture in `tests/distro.sh` that runs sing-box the way the unit would
+
+**Reproduction:** drop either capability from `caps=` in `tests/distro.sh`, and the distro suite goes red on the process rule
 
 **Misleading result:** a `name` or `path` split entry is accepted, sing-box starts clean, and the listed process still goes through the tunnel. Nothing is logged
 
@@ -12,11 +16,13 @@ Traps in sing-box and the tools around it that produce a plausible but wrong res
 
 **Safe route:** keep both capabilities in all three places. A fixture run as root would match processes the unit never could and pass for the wrong reason, which is why `tests/distro.sh` starts sing-box under `setpriv` with exactly the unit's set
 
-**Reproduction boundary:** drop either capability from `caps=` in `tests/distro.sh`, and the distro suite goes red on the process rule
+---
 
 ## An unanswered AAAA query spends the whole delay budget
 
 **Where it bites:** the throwaway sing-box `skvpn ping` starts, whose config is built in `skvpn.py`, and the base DNS in `nix/module.nix` and `non-nix/render-base.py` that it matches
+
+**Reproduction:** only a network that leaves AAAA queries unanswered shows it, such as the distro suite's containers; a network that answers or refuses AAAA promptly does not
 
 **Misleading result:** every profile reports `timeout`, on every distribution, while the nodes are healthy
 
@@ -24,16 +30,16 @@ Traps in sing-box and the tools around it that produce a plausible but wrong res
 
 **Safe route:** keep `ipv4_only` in the probe, as in the base. It is load-bearing, not taste
 
-**Reproduction boundary:** a network that answers or refuses AAAA promptly does not show it; the distro suite's containers did
+---
 
 ## The container engine hands a fixture the observer's resolver
 
 **Where it bites:** both container runs in `tests/distro.sh` — the one per distribution and the one that probes the tunnel from inside a container
+
+**Reproduction:** run the distro suite on a host with skvpn active and drop the flag
 
 **Misleading result:** on a developer's host that runs skvpn, every direct lookup inside the fixture hangs, as if the split rules or the fixture were broken. A host without skvpn never shows it
 
 **Mechanism:** without `--dns`, docker and podman copy the host's `resolv.conf` into the container. A host running skvpn lists its own TUN's DNS there, and inside the container that address is the fixture's blocking TUN, so every lookup sinks into it
 
 **Safe route:** name the resolver on every run, `--dns 1.1.1.1`
-
-**Reproduction boundary:** run the distro suite on a host with skvpn active and drop the flag
