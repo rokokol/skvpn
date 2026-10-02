@@ -17,6 +17,7 @@ SYSCONFDIR="${SYSCONFDIR:-/etc}"
 LOCALSTATEDIR="${LOCALSTATEDIR:-/var}"
 SYSTEMD_UNITDIR="${SYSTEMD_UNITDIR:-/etc/systemd/system}"
 SING_BOX="${SING_BOX:-/usr/bin/sing-box}"
+NFT="${NFT:-/usr/sbin/nft}"
 SERVICE_USER="${SERVICE_USER:-sing-box}"
 SERVICE_GROUP="${SERVICE_GROUP:-sing-box}"
 PROFILES_OWNER="${PROFILES_OWNER:-root}"
@@ -29,6 +30,8 @@ RESTART_SETTLE_TICKS="${RESTART_SETTLE_TICKS:-4}"
 DISCORD_VOICE=0
 SYSTEMD=1
 CONFIG_ARGS=()
+# Flags for nft-bypass.sh, which the units run once sing-box has made its table
+BYPASS_FLAGS=()
 RESTORE=1
 SYNC_INTERVAL=daily
 EXTRA_SETTINGS=""
@@ -55,8 +58,11 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
                        call — for containers and image builds without PID 1 systemd
   --fix-discord-voice  use loose IPv4 reverse-path filtering for tunnelled UDP;
                        absent, the fix is removed and the previous value restored
-  --tailscale          keep Tailscale address ranges out of the TUN
-  --docker             keep the docker0 bridge out of the TUN
+  --tailscale          keep Tailscale address ranges and tailscaled's own traffic out of
+                       the TUN
+  --docker             keep the docker0 bridge and dynamic br-* bridges out of the TUN
+  --syncthing          keep UDP from Syncthing's port 22000 out of the TUN, so its QUIC
+                       keeps the source port peers know
   --direct-russia      route Russian zones, geosite and geoip directly
   --direct-china       route Chinese zones, geosite and geoip directly
   --direct-iran        route Iranian zones, geosite and geoip directly
@@ -85,7 +91,7 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
 
 The CLI goes to \$PREFIX/bin/skvpn, completions and the install manifest to
 \$PREFIX/share, the base config to \$SYSCONFDIR/sing-box/base.d, and units to
-\$SYSTEMD_UNITDIR. python3, systemd, and sing-box must already be installed; a failed
+\$SYSTEMD_UNITDIR. python3, systemd, sing-box and nftables must already be installed; a failed
 preflight prints distro-specific guidance and installs nothing on its own.
 
 A re-run restarts each active sing-box@<profile> by name and watches it for
@@ -130,6 +136,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tailscale | --docker)
       CONFIG_ARGS+=("$1")
+      BYPASS_FLAGS+=("$1")
+      shift
+      ;;
+    --syncthing)
+      BYPASS_FLAGS+=("$1")
       shift
       ;;
     --no-ipv6)
@@ -206,7 +217,7 @@ if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
   die "--uninstall already removes the Discord voice fix"
 fi
 if ((UNINSTALL)) && {
-  ((${#CONFIG_ARGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]})) ||
+  ((${#CONFIG_ARGS[@]} || ${#BYPASS_FLAGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]})) ||
     [[ -n "$EXTRA_SETTINGS" || "$SYNC_INTERVAL" != daily ]]
 }; then
   die "--uninstall cannot be combined with configuration options"
@@ -224,6 +235,8 @@ extra_config="$sysconf_root/sing-box/base.d/50-extra.json"
 profiles_dir="$sysconf_root/sing-box/profiles"
 skvpn_bin="$PREFIX/bin/skvpn"
 sing_box_dropin="$unit_root/sing-box@.service.d/skvpn.conf"
+bypass_bin="$PREFIX/lib/skvpn/nft-bypass"
+bypass_command="$bypass_bin apply${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
 profile_file="$sysconf_root/profile.d/skvpn.sh"
 manifest_file="$root/share/skvpn/install-manifest"
@@ -239,6 +252,7 @@ live_sys=0
 missing=()
 sing_box_missing=0
 python3_missing=0
+nft_missing=0
 for command in install mktemp python3; do
   command -v "$command" >/dev/null || {
     missing+=("$command")
@@ -265,6 +279,11 @@ if ((live)); then
     if [[ ! -x "$SING_BOX" ]]; then
       missing+=("sing-box ($SING_BOX)")
       sing_box_missing=1
+    fi
+    # The units' bypass rules: replies to inbound UDP need them on every install
+    if [[ ! -x "$NFT" ]]; then
+      missing+=("nft ($NFT)")
+      nft_missing=1
     fi
     if ((live_sys)) && command -v systemctl >/dev/null && ! systemctl cat sing-box@.service >/dev/null 2>&1; then
       missing+=("sing-box@.service")
@@ -350,6 +369,26 @@ if ((${#missing[@]})); then
           ;;
       esac
     fi
+    if ((nft_missing)); then
+      case " $distro " in
+        *" arch "*)
+          printf '\nInstall nftables on Arch/CachyOS:\n'
+          printf '  $ sudo pacman -S --needed nftables\n'
+          ;;
+        *" debian "* | *" ubuntu "*)
+          printf '\nInstall nftables on Debian/Ubuntu:\n'
+          printf '  $ sudo apt-get update\n'
+          printf '  $ sudo apt-get install nftables\n'
+          ;;
+        *" fedora "*)
+          printf '\nInstall nftables on Fedora:\n'
+          printf '  $ sudo dnf install nftables\n'
+          ;;
+        *)
+          printf '\nInstall nftables with your package manager\n'
+          ;;
+      esac
+    fi
   } >&2
   exit 1
 fi
@@ -415,7 +454,7 @@ if ((UNINSTALL)); then
   fi
   rm -f "$managed_state"
   rmdir "$unit_root/sing-box@.service.d" "$state_root" "$root/share/skvpn" \
-    "$sysconf_root/sing-box/base.d" 2>/dev/null || true
+    "$root/lib/skvpn" "$sysconf_root/sing-box/base.d" 2>/dev/null || true
   if ((live_sys)); then
     systemctl daemon-reload
   fi
@@ -480,6 +519,7 @@ if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
     "$base_config" "$extra_config" "$sing_box_dropin"
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
     "$unit_root/skvpn-sync.timer" "$sudoers_file" "$profile_file" "$sysctl_file"
+    "$root/lib/skvpn/nft-bypass"
   )
   for path in "${managed_paths[@]}"; do
     [[ ! -e "$path" ]] || {
@@ -507,6 +547,8 @@ install -Dm644 "$here/completions/_skvpn" "$root/share/zsh/site-functions/_skvpn
 rec "$root/share/zsh/site-functions/_skvpn"
 install -Dm644 "$here/VERSION" "$root/share/skvpn/VERSION"
 rec "$root/share/skvpn/VERSION"
+install -Dm755 "$here/nft-bypass.sh" "$root/lib/skvpn/nft-bypass"
+rec "$root/lib/skvpn/nft-bypass"
 
 # What the running instance is on right now, kept until it has proven the new base:
 # a base sing-box rejects would otherwise take the tunnel down with nothing to go back to
@@ -577,6 +619,8 @@ ExecStart=
 ExecStart=$SING_BOX -D $LOCALSTATEDIR/lib/sing-box-%i -C $SYSCONFDIR/sing-box/base.d -c $SYSCONFDIR/sing-box/profiles/%i.json run
 CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+Environment=NFT=$NFT
+ExecStartPost=$bypass_command
 EOF
 rec "$sing_box_dropin"
 

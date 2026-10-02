@@ -133,6 +133,51 @@ let
     path = "${path}";
   };
 
+  # Return rules sing-box's own auto_redirect table lacks, inserted once it exists: the
+  # flags are the policy, the rules live in the script the installer runs too
+  bypassCommand = lib.concatStringsSep " " (
+    [ "${cfg.package}/libexec/skvpn/nft-bypass apply" ]
+    ++ lib.optional cfg.tailscale.enable "--tailscale"
+    ++ lib.optional cfg.docker.enable "--docker"
+    ++ lib.optional cfg.syncthing.enable "--syncthing"
+  );
+
+  # The unit's shape bar the config and state paths it is started with
+  singBoxService = {
+    after = [
+      "network-online.target"
+      "nss-lookup.target"
+    ];
+    wants = [ "network-online.target" ];
+
+    path = [ pkgs.nftables ];
+    postStart = bypassCommand;
+
+    serviceConfig = {
+      User = "sing-box";
+      # Upstream's own set. The last two are what a process rule runs on; without them
+      # every split entry is silently a no-op (PITFALLS.md)
+      CapabilityBoundingSet = [
+        "CAP_NET_ADMIN"
+        "CAP_NET_RAW"
+        "CAP_NET_BIND_SERVICE"
+        "CAP_SYS_PTRACE"
+        "CAP_DAC_READ_SEARCH"
+      ];
+      AmbientCapabilities = [
+        "CAP_NET_ADMIN"
+        "CAP_NET_RAW"
+        "CAP_NET_BIND_SERVICE"
+        "CAP_SYS_PTRACE"
+        "CAP_DAC_READ_SEARCH"
+      ];
+      ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+      Restart = "on-failure";
+      RestartSec = "10s";
+      LimitNOFILE = "infinity";
+    };
+  };
+
   baseConfig = {
     log = {
       level = "warn";
@@ -366,6 +411,18 @@ in
       '';
     };
 
+    syncthing.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.services.syncthing.enable or false;
+      defaultText = lib.literalExpression "config.services.syncthing.enable";
+      description = ''
+        Let UDP from Syncthing's default listening port, 22000, leave by the host's routes.
+        Through the TUN its QUIC leaves the direct outbound from a fresh port, and a peer
+        that knows this host as `address:22000` never hears back. Its TCP and its relay and
+        discovery traffic keep going through the tunnel
+      '';
+    };
+
     direct =
       lib.mapAttrs (_: preset: {
         enable = lib.mkEnableOption "" // {
@@ -537,14 +594,8 @@ in
     # everyone, so shell completion can offer profile names without root
     systemd.tmpfiles.rules = [ "d /etc/sing-box/profiles 2755 root sing-box -" ];
 
-    systemd.services."sing-box@" = {
+    systemd.services."sing-box@" = lib.recursiveUpdate singBoxService {
       description = "sing-box, profile %i";
-
-      after = [
-        "network-online.target"
-        "nss-lookup.target"
-      ];
-      wants = [ "network-online.target" ];
 
       # A rebuild that changes the base config has to restart the active instance, or the
       # policy on the wire silently stays the old one
@@ -553,44 +604,9 @@ in
         (builtins.toJSON cfg.extraSettings)
       ];
 
-      # sing-box only accepts exact names in exclude_interface. Docker names user-defined
-      # bridges br-<network-id>, so insert nftables wildcard returns after sing-box creates
-      # its table; these also match bridges created later without restarting the VPN
-      postStart = lib.optionalString cfg.docker.enable ''
-        for _ in {1..50}; do
-          ${pkgs.nftables}/bin/nft list chain inet sing-box prerouting >/dev/null 2>&1 && break
-          sleep 0.1
-        done
-        ${pkgs.nftables}/bin/nft -f - <<'EOF'
-        insert rule inet sing-box prerouting iifname "br-*" return comment "skvpn: bypass Docker bridges"
-        insert rule inet sing-box prerouting_udp_icmp iifname "br-*" return comment "skvpn: bypass Docker bridges"
-        EOF
-      '';
-
       serviceConfig = {
-        User = "sing-box";
         StateDirectory = "sing-box-%i";
-        # Upstream's own set. The last two are what a process rule runs on; without them
-        # every split entry is silently a no-op (PITFALLS.md)
-        CapabilityBoundingSet = [
-          "CAP_NET_ADMIN"
-          "CAP_NET_RAW"
-          "CAP_NET_BIND_SERVICE"
-          "CAP_SYS_PTRACE"
-          "CAP_DAC_READ_SEARCH"
-        ];
-        AmbientCapabilities = [
-          "CAP_NET_ADMIN"
-          "CAP_NET_RAW"
-          "CAP_NET_BIND_SERVICE"
-          "CAP_SYS_PTRACE"
-          "CAP_DAC_READ_SEARCH"
-        ];
         ExecStart = "${lib.getExe cfg.singBoxPackage} -D /var/lib/sing-box-%i -C /etc/sing-box/base.d -c /etc/sing-box/profiles/%i.json run";
-        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-        Restart = "on-failure";
-        RestartSec = "10s";
-        LimitNOFILE = "infinity";
       };
     };
 

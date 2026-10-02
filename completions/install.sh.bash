@@ -13,7 +13,7 @@ _install_sh_skvpn() {
 
   local flags=(
     -h --help -v --version --prefix --destdir --uninstall --no-systemd
-    --fix-discord-voice --tailscale --docker
+    --fix-discord-voice --tailscale --docker --syncthing
     --direct-russia --direct-china --direct-iran
     --direct-zone --direct-geosite --direct-geoip --split
     --tun-interface --tun-address --stack --no-ipv6 --dns-server

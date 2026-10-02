@@ -938,7 +938,7 @@ fi
 world installer-help-lists-every-feature
 help=$("$REPO/install.sh" --help)
 missing=""
-for option in help version prefix destdir uninstall no-systemd tailscale docker \
+for option in help version prefix destdir uninstall no-systemd tailscale docker syncthing \
   direct-russia direct-china direct-iran direct-zone direct-geosite \
   direct-geoip split tun-interface tun-address dns-server extra-settings no-restore sync-interval \
   trusted-user fix-discord-voice stack no-ipv6; do
@@ -965,6 +965,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$SKVPN_ROOT/missing-sing-box"
+  "NFT=$SKVPN_ROOT/missing-nft"
   "SERVICE_USER=missing-sing-box-user"
   "OS_RELEASE=$SKVPN_ROOT/os-release"
   "SYSTEMCTL_FAIL=cat sing-box@.service"
@@ -984,6 +985,8 @@ elif [[ "$out" == *"sing-box ($SKVPN_ROOT/missing-sing-box)"* &&
   "$out" == *"official APT repository"* ]] &&
   grep -qxF '  $ sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc' <<<"$out" &&
   grep -qxF '  $ sudo apt-get install sing-box' <<<"$out" &&
+  [[ "$out" == *"nft ($SKVPN_ROOT/missing-nft)"* ]] &&
+  grep -qxF '  $ sudo apt-get install nftables' <<<"$out" &&
   [[ ! -e "$SKVPN_ROOT/usr/bin/skvpn" ]]; then
   ok
 else
@@ -1023,6 +1026,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1046,6 +1050,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1078,6 +1083,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1128,6 +1134,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1158,6 +1165,23 @@ else
   fail "--docker did not reach exclude_interface, or a bare render carries it"
 fi
 
+# The rules themselves live in nft-bypass.sh; the installer only picks its flags, and the
+# reply rule needs none, so even a bare install runs the script
+world installer-wires-the-bypass-rules
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tailscale --docker --syncthing >/dev/null
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/bare-stage" >/dev/null
+dropin="$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf"
+bare_dropin="$SKVPN_ROOT/bare-stage/etc/systemd/system/sing-box@.service.d/skvpn.conf"
+if grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale --docker --syncthing' "$dropin" &&
+  grep -qx 'Environment=NFT=/usr/sbin/nft' "$dropin" &&
+  grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply' "$bare_dropin" &&
+  [[ -x "$SKVPN_ROOT/stage/usr/local/lib/skvpn/nft-bypass" ]] &&
+  grep -qx '/usr/local/lib/skvpn/nft-bypass' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
+  ok
+else
+  fail "the bypass script is missing, unrecorded, or the unit runs it with the wrong flags"
+fi
+
 # --no-systemd is a real install that must not say a word to systemd; the stub log is
 # the whole record of what would have been said
 world no-systemd-install-stays-silent-toward-systemd
@@ -1168,6 +1192,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1193,6 +1218,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1221,6 +1247,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"
@@ -1255,6 +1282,7 @@ installer_env=(
   "LOCALSTATEDIR=$SKVPN_ROOT/var"
   "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
   "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
   "SERVICE_USER=$(id -un)"
   "SERVICE_GROUP=$(id -gn)"
   "PROFILES_OWNER=$(id -un)"

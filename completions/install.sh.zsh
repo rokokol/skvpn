@@ -14,8 +14,9 @@ _install_sh_skvpn() {
     '--uninstall[remove skvpn and settings installed by this script]' \
     '--no-systemd[skip every live systemctl and sysctl call]' \
     '--fix-discord-voice[loose IPv4 reverse-path filtering for tunnelled UDP]' \
-    '--tailscale[keep Tailscale address ranges out of the TUN]' \
-    '--docker[keep the docker0 bridge out of the TUN]' \
+    '--tailscale[keep Tailscale ranges and tailscaled traffic out of the TUN]' \
+    '--docker[keep the docker0 and br-* bridges out of the TUN]' \
+    '--syncthing[keep UDP from Syncthing port 22000 out of the TUN]' \
     '--direct-russia[route Russian zones, geosite and geoip directly]' \
     '--direct-china[route Chinese zones, geosite and geoip directly]' \
     '--direct-iran[route Iranian zones, geosite and geoip directly]' \

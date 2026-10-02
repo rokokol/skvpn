@@ -93,11 +93,8 @@ if ! "$NFT" list chain inet sing-box prerouting >/dev/null 2>&1 ||
   exit 1
 fi
 
-cat >"$tmp/docker-bypass.nft" <<'EOF'
-insert rule inet sing-box prerouting iifname "br-*" return comment "skvpn: bypass Docker bridges"
-insert rule inet sing-box prerouting_udp_icmp iifname "br-*" return comment "skvpn: bypass Docker bridges"
-EOF
-"$NFT" -f "$tmp/docker-bypass.nft"
+# The very script the units run, not a copy of its rules
+NFT="$NFT" bash "$(dirname "$0")/../nft-bypass.sh" apply --docker
 
 # Created after sing-box starts: no static interface-name list can know this br-* name.
 docker network create --subnet 10.250.1.0/24 "$network" >/dev/null

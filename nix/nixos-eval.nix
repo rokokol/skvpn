@@ -55,6 +55,12 @@ let
     };
   };
 
+  # syncthing.enable follows the host's own Syncthing the way docker.enable follows Docker
+  syncthingFollow = evalWith {
+    services.syncthing.enable = true;
+    services.skvpn.enable = true;
+  };
+
   # docker.enable defaults to following the host's own docker switch, the way
   # tailscale.enable follows services.tailscale — nothing under services.skvpn set here
   dockerFollow = evalWith {
@@ -102,6 +108,7 @@ in
   enabledAlias = enabled.environment.shellAliases.skvpn or null;
 
   dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
+  syncthingFollowPostStart = syncthingFollow.systemd.services."sing-box@".postStart;
 
   hostStrictBroken = broken hostStrict;
   hostStrictFirewall = hostStrict.networking.firewall.checkReversePath;

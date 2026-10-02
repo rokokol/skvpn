@@ -83,6 +83,7 @@ let
       enable = true;
       tailscale.enable = true;
       docker.enable = true;
+      syncthing.enable = true;
       tun = {
         ipv6 = false;
         stack = "gvisor";
@@ -160,7 +161,8 @@ in
   packages = names tuned.environment.systemPackages;
   tmpfiles = tuned.systemd.tmpfiles.rules;
   services = lib.attrNames tuned.systemd.services;
-  dockerPostStart = tuned.systemd.services."sing-box@".postStart;
+  postStart = tuned.systemd.services."sing-box@".postStart;
+  unitPath = names tuned.systemd.services."sing-box@".path;
   capabilities = tuned.systemd.services."sing-box@".serviceConfig.AmbientCapabilities;
   timerInterval = tuned.systemd.timers.skvpn-sync.timerConfig.OnCalendar;
   firewall = tuned.networking.firewall.checkReversePath;
@@ -171,6 +173,7 @@ in
   bareBase = bare.environment.etc."sing-box/base.d/00-base.json".text;
   bareEtc = lib.attrNames bare.environment.etc;
   bareAliases = bare.environment.shellAliases;
+  barePostStart = bare.systemd.services."sing-box@".postStart;
 
   presetsBase = presetsOn.environment.etc."sing-box/base.d/00-base.json".text;
 

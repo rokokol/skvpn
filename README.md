@@ -9,6 +9,7 @@
 ![Nix](https://img.shields.io/badge/Nix-flake-7EBAE4?style=flat&logo=nixos&logoColor=white)
 [![deviations](https://img.shields.io/badge/docs-deviations-555?style=flat)](DEVIATIONS.md)
 [![pitfalls](https://img.shields.io/badge/docs-pitfalls-555?style=flat)](PITFALLS.md)
+[![workarounds](https://img.shields.io/badge/docs-workarounds-555?style=flat)](WORKAROUNDS.md)
 [![license](https://img.shields.io/badge/MIT-3DA639?style=flat)](LICENSE)
 [![build](https://github.com/rokokol/skvpn/actions/workflows/build.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/build.yml)
 [![debian](https://github.com/rokokol/skvpn/actions/workflows/distro-debian.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-debian.yml)
@@ -89,6 +90,10 @@ Bypass only: a listed process name, executable path, destination address or site
 
 **A change needs a restart, and asks for it.** sing-box reads its routing rules only at start, and dropping the tunnel is your call: `skvpn split add`/`rm` write the file and print `<active> is still on the old rules — apply with sudo skvpn restart`; with nothing running they say the rule takes effect on the next `up`. `skvpn split ls` shows both lists, the declared one marked `declared`. Neither `--uninstall` nor a NixOS rebuild touches `70-split.json`: it is state, like the profiles
 
+### Living beside other tunnels
+
+Tailscale, Syncthing and Docker keep their own paths while a profile is up: tailscaled's peer traffic stays off the tunnel, so two hosts on one network reach each other directly rather than through the exit; Syncthing's QUIC keeps the port its peers know; containers on any Docker bridge reach the network as before. Each follows the matching service on NixOS and is a flag for the installer. A UDP service answering the internet keeps working either way — why it needed help is in [WORKAROUNDS.md](WORKAROUNDS.md)
+
 Subscription bodies are fetched with a custom `User-Agent` — Cloudflare's bot rules answer 403 to the stock Python one. Profiles you `add` by hand are never overwritten or pruned by a sync: the manifest remembers which names came from the subscription. The converse holds too — an `add` over a subscription-owned name keeps that name in the manifest, so the next sync writes the subscription's version back
 
 ## NixOS module
@@ -123,8 +128,9 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `direct.zones` | `[ ]` | domain suffixes resolved by the local bootstrap and routed past the tunnel |
 | `direct.geosite` / `direct.geoip` | `{ }` | local binary rule-sets routed direct, keyed by tag; local on purpose — a remote set would arrive through the tunnel it is meant to steer |
 | `split.names` / `split.paths` / `split.ips` | `[ ]` | split tunnelling in the bypass sense: process names, absolute executable paths and destination CIDRs that leave around the tunnel; names and paths take `*`/`?` wildcards, and the process kinds resolve locally too. `skvpn split add` keeps an imperative list beside these |
-| `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges out of the TUN |
+| `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges and tailscaled's own peer traffic out of the TUN |
 | `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: follow the configured default bridge name, bypass dynamic `br-*` interfaces in nftables, and exclude `virtualisation.docker.daemon.settings.default-address-pools` from TUN routes |
+| `syncthing.enable` | follows `services.syncthing.enable` | keep Syncthing's QUIC on the port its peers know |
 | `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box `-C` semantics: objects merge, arrays append, scalars replace |
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
@@ -153,7 +159,7 @@ inputs.skvpn = {
 then import `inputs.skvpn.nixosModules.default` and enable as above. Without the module, `packages.default` and `overlays.default` carry the bare CLI. On Arch Linux without Nix:
 
 ```sh
-sudo pacman -S sing-box
+sudo pacman -S sing-box nftables
 sudo ./install.sh                     # PREFIX=/usr/local; --prefix/--destdir supported
 sudo ./install.sh --fix-discord-voice # loosen IPv4 reverse-path filtering for tunnelled UDP
 sudo ./install.sh --uninstall         # remove everything by the install manifest
@@ -164,7 +170,7 @@ The Arch package supplies the binary, service user and template unit. The instal
 
 Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific guidance when anything is missing — every runnable line as `$ command`, exactly what to type; nothing is ever installed on your behalf
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--syncthing`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set

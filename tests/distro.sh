@@ -29,8 +29,9 @@ declare -A IMAGE=(
 # systemctl calls, which is exactly what it exists for. The split entries are the
 # declared layer of the split test below: curl goes direct by process name, and the
 # path wildcard and the CIDR are there for the installed sing-box to accept — a field
-# the distribution's build does not know would refuse the whole base
-INSTALL_FLAGS=(--no-systemd --docker --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
+# the distribution's build does not know would refuse the whole base. The bypass flags
+# give the script every rule it has
+INSTALL_FLAGS=(--no-systemd --docker --tailscale --syncthing --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
 UNINSTALL_FLAGS=(--no-systemd)
 
 # Bootstrap: only what the harness itself needs in a minimal image — never a dependency
@@ -79,6 +80,8 @@ EOF
   "$prefix/bin/skvpn" split ls | grep -qE '^  path +/opt/\*/bin/tor +declared$'
   "$prefix/bin/skvpn" split ls | grep -qE '^  domain +ubuntu\.com +declared$'
   test -f /etc/systemd/system/sing-box@.service.d/skvpn.conf
+  grep -qx "ExecStartPost=$prefix/lib/skvpn/nft-bypass apply --docker --tailscale --syncthing" \
+    /etc/systemd/system/sing-box@.service.d/skvpn.conf
 }
 
 # The imperative layer, written before the fixture sing-box starts so it reads the file
@@ -236,6 +239,16 @@ EOF
     sleep 0.1
   done
   [[ -e /sys/class/net/skvpn-tun ]] || return 1
+
+  # The units' ExecStartPost, under the unit's identity: not root, only its capabilities
+  say "the bypass script inserts every rule as the service user"
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    env NFT="$(command -v nft)" "$prefix/lib/skvpn/nft-bypass" apply --docker --tailscale --syncthing
+  [[ "$(nft list table inet sing-box | grep -c 'comment "skvpn: ')" == 8 ]] || {
+    nft list table inet sing-box >&2
+    return 1
+  }
 
   # The resolver is named: the engine would otherwise copy the observer's (PITFALLS.md)
   DOCKER_HOST=$docker_host docker run --rm --dns 1.1.1.1 ubuntu:latest bash -euc '

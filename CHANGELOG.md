@@ -2,6 +2,19 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
+## Unreleased
+
+### Added
+
+- `syncthing.enable`, following `services.syncthing.enable`, and the installer's `--syncthing` keep Syncthing's QUIC on the port its peers know
+- the distro suite runs the bypass script as the service user, with the unit's capabilities and nothing more
+
+### Fixed
+
+- a UDP service on the host answers peers on the internet while a profile is up: sing-box sent the answers into the TUN and out from a new port, which broke Syncthing's QUIC and inbound Tailscale. Every install now carries the rule, so the installer needs `nftables` and its preflight says how to get it ([WORKAROUNDS.md](WORKAROUNDS.md))
+- with `tailscale.enable` or `--tailscale`, tailscaled's own peer traffic stays off the tunnel, and two tailnet hosts behind one network reach each other directly instead of through the exit node ([WORKAROUNDS.md](WORKAROUNDS.md))
+- the installer's `--docker` now bypasses dynamically named `br-*` bridges too, as the NixOS module already did
+
 ## [2.0.0] - 2026-09-15
 
 ### Added

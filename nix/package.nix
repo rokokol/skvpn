@@ -6,6 +6,7 @@
   stdenvNoCC,
   installShellFiles,
   python3,
+  bash,
 }:
 
 let
@@ -26,6 +27,10 @@ let
     name = "_skvpn";
     path = ../completions/_skvpn;
   };
+  bypassScript = builtins.path {
+    name = "nft-bypass.sh";
+    path = ../nft-bypass.sh;
+  };
 in
 
 stdenvNoCC.mkDerivation {
@@ -38,7 +43,11 @@ stdenvNoCC.mkDerivation {
     installShellFiles
     python3.pkgs.flake8
   ];
-  buildInputs = [ python3 ];
+  # bash for the bypass script's shebang, which patchShebangs resolves from here
+  buildInputs = [
+    python3
+    bash
+  ];
 
   # The same lint writePython3Bin used to run when the script lived in a NixOS config
   doCheck = true;
@@ -52,9 +61,11 @@ stdenvNoCC.mkDerivation {
     runHook preInstall
 
     install -Dm755 ${script} $out/bin/skvpn
-    patchShebangs $out/bin
     # skvpn --version reads this at share/skvpn/VERSION relative to the binary
     install -Dm644 ${versionFile} $out/share/skvpn/VERSION
+    # The units' ExecStartPost; nft comes from the unit's PATH, which the module sets
+    install -Dm755 ${bypassScript} $out/libexec/skvpn/nft-bypass
+    patchShebangs $out/bin $out/libexec
 
     installShellCompletion --bash --name skvpn ${bashCompletion}
     installShellCompletion --zsh --name _skvpn ${zshCompletion}
