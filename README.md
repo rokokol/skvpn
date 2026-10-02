@@ -138,7 +138,7 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges and tailscaled's own peer traffic out of the TUN |
 | `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: follow the configured default bridge name, bypass dynamic `br-*` interfaces in nftables, and exclude `virtualisation.docker.daemon.settings.default-address-pools` from TUN routes |
 | `syncthing.enable` | follows `services.syncthing.enable` | keep Syncthing's QUIC on the port its peers know |
-| `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box `-C` semantics: objects merge, arrays append, scalars replace |
+| `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box's own rules: objects merge, arrays append, and a scalar the base already sets stays the base's ([PITFALLS.md](PITFALLS.md)) |
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
 | `sync.interval` | `"daily"` | `OnCalendar` for the subscription refresh |

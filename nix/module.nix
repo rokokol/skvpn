@@ -592,13 +592,14 @@ in
       type = lib.types.attrs;
       default = { };
       example = {
-        log.level = "debug";
+        experimental.cache_file.enabled = true;
       };
       description = ''
-        Written as a second file in `base.d`, merged by sing-box's own `-C` semantics:
-        objects merge recursively, arrays are appended, scalars are replaced by the later
-        file. Appending is the reach of this option — a scalar inside an existing array
-        element (say, the TUN inbound) cannot be changed from here
+        Written as a second file in `base.d`, merged by sing-box's own rules: objects merge
+        recursively, arrays are appended, and a scalar keeps the value of the first file
+        that sets it. The base comes first, so this option adds — a key the base lacks, a
+        rule after the base's — and cannot change a scalar the base already sets, such as
+        `log.level` (PITFALLS.md)
       '';
     };
 
