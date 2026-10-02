@@ -27,6 +27,10 @@ let
     name = "_skvpn";
     path = ../completions/_skvpn;
   };
+  policyFile = builtins.path {
+    name = "skvpn-policy.json";
+    path = ../policy.json;
+  };
   bypassScript = builtins.path {
     name = "nft-bypass.sh";
     path = ../nft-bypass.sh;
@@ -63,6 +67,8 @@ stdenvNoCC.mkDerivation {
     install -Dm755 ${script} $out/bin/skvpn
     # skvpn --version reads this at share/skvpn/VERSION relative to the binary
     install -Dm644 ${versionFile} $out/share/skvpn/VERSION
+    # skvpn export reads the tailnet and the rule-set sources here, as it reads VERSION
+    install -Dm644 ${policyFile} $out/share/skvpn/policy.json
     # The units' ExecStartPost; nft comes from the unit's PATH, which the module sets
     install -Dm755 ${bypassScript} $out/libexec/skvpn/nft-bypass
     patchShebangs $out/bin $out/libexec

@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 
 # Presets, the guard's AI rule-set and the tailnet: policy.json beside non-nix/, the
-# file the NixOS module reads too
+# file the NixOS module and the CLI read too
 POLICY_FILE = Path(__file__).resolve().parent.parent / "policy.json"
 POLICY = json.loads(POLICY_FILE.read_text())
 PRESETS = {preset["name"]: preset for preset in POLICY["presets"]}

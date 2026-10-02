@@ -1057,14 +1057,256 @@ def cmd_status(args):
         print_pings(measure(profile_names()), servers)
 
 
-def version():
-    # Beside the script in a checkout; under share/ once installed (install.sh and the
-    # Nix package both put it there)
+# --- export -----------------------------------------------------------------
+
+# Kept out of the phone's TUN, so that the LAN reaches the phone: a VPN that takes these
+# answers a LAN peer from inside the tunnel, and Syncthing on the LAN never connects
+PRIVATE = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "fc00::/7",
+    "fe80::/10",
+]
+
+
+def rule_set_sources():
+    """{tag: URL} for every rule-set policy.json names, under the tags the base and the
+    guard give them. A phone fetches by URL what the host reads from disk, and the tag is
+    what identifies the file: its path on the host carries a store hash, or another name"""
+    data = policy()
+    sources = data["ruleSets"]
+
+    def url(kind, name):
+        return f"https://raw.githubusercontent.com/{sources[kind]}/{sources['branch']}/{name}"
+
+    tags = {}
+    for preset in data["presets"]:
+        tags[f"geosite-{preset['tag']}"] = url("geosite", preset["geosite"])
+        tags[f"geoip-{preset['tag']}"] = url("geoip", preset["geoip"])
+    tags[f"geosite-{data['guard']['tag']}"] = url("geosite", data["guard"]["geosite"])
+    return tags
+
+
+def load_base():
+    path = BASE_D / "00-base.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        die(f"no readable base at {path}")
+
+
+def sfa_config(names, active, tailscale):
+    """A whole config for sing-box for Android: every profile in one selector, the host's
+    direct policy with its rule-sets fetched by URL, and the tailnet as an endpoint
+    when asked. The phone has no other source for any of it."""
+    base = load_base()
+    sources = rule_set_sources()
+    nodes = []
+    for name in names:
+        node = read_profile(name)
+        if node is None:
+            die(f"broken profile: {name}")
+        nodes.append({**node, "tag": name})
+
+    rule_sets = {}
+
+    def fetchable(tags):
+        """The tags a phone can fetch, each declared once; the rest named and left out."""
+        kept = []
+        for tag in tags:
+            if tag not in sources:
+                print(f"skvpn: {tag} has no public source — left out", file=sys.stderr)
+                continue
+            kept.append(tag)
+            rule_sets[tag] = {
+                "tag": tag,
+                "type": "remote",
+                "format": "binary",
+                "url": sources[tag],
+                "http_client": "through-proxy",
+            }
+        return kept
+
+    # Domain and address kinds of both split lists; base zones are domain rules too.
+    # Process rules name the host's programs, which a phone does not have
+    declared, imperative = split_declared(), split_load()
+    zones = list(dict.fromkeys(declared["domain"] + imperative["domain"]))
+    ips = list(dict.fromkeys(declared["ip"] + imperative["ip"]))
+    tags = fetchable(
+        tag
+        for rule in base.get("route", {}).get("rules", [])
+        if rule.get("outbound") == "direct"
+        for tag in as_list(rule.get("rule_set"))
+    )
+    geosite = [tag for tag in tags if tag.startswith("geosite-")]
+    remote = next(s for s in base["dns"]["servers"] if s.get("tag") == "remote")
+
+    # The host's guard, as the Direct mode the phone switches to instead of stopping:
+    # what the guard refuses stays refused, and the rest leaves direct
+    guarded = []
+    if GUARD.exists():
+        for rule in json.loads(GUARD.read_text()).get("route", {}).get("rules", []):
+            if rule.get("action") != "reject":
+                continue
+            if rule.get("domain_suffix"):
+                guarded.append({"domain_suffix": rule["domain_suffix"]})
+            kept = fetchable(as_list(rule.get("rule_set")))
+            if kept:
+                guarded.append({"rule_set": kept})
+
+    dns_rules = []
+    route_rules = [{"action": "sniff"}, {"protocol": "dns", "action": "hijack-dns"}]
+    if tailscale:
+        dns_rules.append({"domain_suffix": [".ts.net"], "action": "route", "server": "tailnet"})
+        route_rules.append({"ip_cidr": policy()["tailnet"], "outbound": "tailnet"})
+    if guarded:
+        for match in guarded:
+            dns_rules.append({"clash_mode": "Direct", **match, "action": "predefined", "rcode": "REFUSED"})
+            route_rules.append({"clash_mode": "Direct", **match, "action": "reject"})
+        dns_rules.append({"clash_mode": "Direct", "action": "route", "server": "local"})
+        route_rules.append({"clash_mode": "Direct", "outbound": "direct"})
+    route_rules.append({"ip_is_private": True, "outbound": "direct"})
+    if zones:
+        dns_rules.append({"domain_suffix": zones, "action": "route", "server": "local"})
+        route_rules.append({"domain_suffix": zones, "outbound": "direct"})
+    if geosite:
+        dns_rules.append({"rule_set": geosite, "action": "route", "server": "local"})
+    if tags:
+        route_rules.append({"rule_set": tags, "outbound": "direct"})
+    if ips:
+        route_rules.append({"ip_cidr": ips, "outbound": "direct"})
+
+    servers = [
+        {"tag": "local", "type": "local"},
+        {**remote, "domain_resolver": "local"},
+    ]
+    if tailscale:
+        servers.append({
+            "tag": "tailnet",
+            "type": "tailscale",
+            "endpoint": "tailnet",
+            "accept_default_resolvers": False,
+        })
+    config = {
+        "log": {"level": "warn", "timestamp": True},
+        "dns": {
+            "servers": servers,
+            "rules": dns_rules,
+            "final": "remote",
+            "strategy": base["dns"].get("strategy", "ipv4_only"),
+            "reverse_mapping": True,
+        },
+        "inbounds": [{
+            "type": "tun",
+            "tag": "tun-in",
+            # The host's own choice, an IPv6 address included only where it kept one
+            "address": base["inbounds"][0]["address"],
+            "auto_route": True,
+            "strict_route": True,
+            "stack": "mixed",
+            "route_exclude_address": PRIVATE,
+        }],
+        "outbounds": [
+            {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": names,
+                "default": active if active in names else names[0],
+            },
+            *nodes,
+            {"type": "direct", "tag": "direct"},
+        ],
+        # The rule-sets come through the node: a direct download from raw.github is
+        # what gets slowed or cut where the node is needed in the first place
+        "http_clients": [{"tag": "through-proxy", "detour": "proxy"}],
+        "route": {
+            "auto_detect_interface": True,
+            "default_domain_resolver": "local",
+            "rules": route_rules,
+            "rule_set": list(rule_sets.values()),
+            "final": "proxy",
+        },
+        # A remote rule-set the phone cannot fetch at start stops sing-box altogether;
+        # the cache is what lets a later start go on without the network
+        "experimental": {"cache_file": {"enabled": True}},
+    }
+    if guarded:
+        # No controller to listen on: the mode is what SFA switches, and the cache keeps
+        # the choice across restarts
+        config["experimental"]["clash_api"] = {"default_mode": "Rule"}
+    if tailscale:
+        config["endpoints"] = [
+            {"type": "tailscale", "tag": "tailnet", "state_directory": "tailscale"}
+        ]
+    return config
+
+
+def cmd_export(args):
+    """The config a profile runs with here, merged by sing-box itself — or, with --sfa,
+    a whole config for a phone. Root: the profiles carry the nodes' credentials."""
+    need_root()
+    sfa, args = take_flag(args, "--sfa")
+    no_tailscale, args = take_flag(args, "--no-tailscale")
+    if no_tailscale and not sfa:
+        die("--no-tailscale goes with --sfa")
+    if sfa:
+        names = [slug(arg) for arg in args] or profile_names()
+        if not names:
+            die("no profiles")
+        for name in names:
+            if not profile_path(name).exists():
+                die(f"no such profile: {name}")
+        base = load_base()
+        # The host keeps the tailnet out of its TUN exactly when it runs Tailscale
+        tailscale = not no_tailscale and set(policy()["tailnet"]) <= set(
+            base["inbounds"][0].get("route_exclude_address", [])
+        )
+        print(json.dumps(sfa_config(names, running(), tailscale), indent=2))
+        return
+    if len(args) > 1:
+        die("usage: skvpn export [<name>] | export --sfa [--no-tailscale] [<name>…]")
+    name = slug(args[0]) if args else running()
+    if name is None:
+        die("nothing is up — name the profile to export")
+    if not profile_path(name).exists():
+        die(f"no such profile: {name}")
+    with tempfile.TemporaryDirectory(prefix="skvpn-export-") as tmp:
+        out = Path(tmp) / "config.json"
+        result = subprocess.run(
+            [sing_box_binary(), "merge", str(out), "-C", str(BASE_D), "-c", str(profile_path(name))],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            die(result.stderr.strip() or "sing-box merge failed")
+        print(out.read_text().rstrip())
+
+
+def shipped(name):
+    """A data file of the repository: beside the script in a checkout, under share/ once
+    installed (install.sh and the Nix package both put it there); None when absent."""
     here = Path(__file__).resolve().parent
-    for candidate in (here / "VERSION", here.parent / "share/skvpn/VERSION"):
+    for candidate in (here / name, here.parent / "share/skvpn" / name):
         if candidate.is_file():
-            return candidate.read_text().strip()
-    return "unknown"
+            return candidate
+    return None
+
+
+def policy():
+    """Presets, the tailnet and where the rule-sets come from — the file the NixOS
+    module and the installer's renderer read too."""
+    path = shipped("policy.json")
+    if path is None:
+        die("policy.json is missing from this install")
+    return json.loads(path.read_text())
+
+
+def version():
+    path = shipped("VERSION")
+    return path.read_text().strip() if path else "unknown"
 
 
 COMMANDS = {
@@ -1080,6 +1322,7 @@ COMMANDS = {
     "split": cmd_split,
     "ping": cmd_ping,
     "status": cmd_status,
+    "export": cmd_export,
 }
 
 

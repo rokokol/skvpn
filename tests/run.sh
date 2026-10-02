@@ -438,6 +438,176 @@ else
   fail "status did not tell a guarded off from a bare one"
 fi
 
+echo "export"
+
+# The merge is sing-box's own: the CLI hands it the base directory and the profile, and
+# prints what it wrote — the stub records the arguments and writes them back as the result
+world export-merges-the-profile-over-the-base
+sv add "$HY2" >/dev/null
+# A failing export prints nothing here; the case names it rather than set -e ending the run
+out=$(sv export HY2 2>/dev/null) || true
+if [[ "$(jq -r '.merged | join(" ")' <<<"$out")" == "-C $SKVPN_ROOT/etc/sing-box/base.d -c $(profile HY2)" ]]; then
+  ok
+else
+  fail "export did not hand sing-box the base and the profile, or did not print its result"
+fi
+
+world export-defaults-to-the-running-profile
+sv add "$HY2" >/dev/null
+export FAKE_ACTIVE=HY2
+if [[ "$(sv export | jq -r '.merged[-1]')" == "$(profile HY2)" ]]; then
+  ok
+else
+  fail "a bare export did not take the running profile"
+fi
+
+world export-needs-a-profile
+if ! sv export >/dev/null 2>&1 && ! sv export nope >/dev/null 2>&1; then
+  ok
+else
+  fail "export with nothing running, or of a missing profile, did not fail"
+fi
+
+# A base the way the installer renders one, so the phone's policy is read from where the
+# host's lives; the custom rule-set has no public source and must be left out, loudly
+sfa_base() {
+  mkdir -p "$SKVPN_ROOT/etc/sing-box/base.d"
+  python3 "$REPO/non-nix/render-base.py" --skip-path-check --preset russia --tailscale \
+    --direct-zone .by --direct-geosite custom=/opt/rules/custom.srs --dns-server 1.1.1.1 \
+    --split-name firefox --split-ip 10.99.0.0/16 --split-domain example.com \
+    >"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+}
+
+world export-sfa-carries-every-profile-and-the-host-policy
+sv add "$HY2" "$TROJAN" >/dev/null
+sfa_base
+sv split add domain split.example.org >/dev/null
+export FAKE_ACTIVE=TROJAN-node
+out=$(sv export --sfa 2>"$SKVPN_ROOT/err") || true
+direct='[.route.rules[] | select(.outbound == "direct")]'
+if jq -e '.outbounds[0] == {"type": "selector", "tag": "proxy", "outbounds": ["HY2", "TROJAN-node"], "default": "TROJAN-node"}' <<<"$out" >/dev/null &&
+  jq -e '[.outbounds[1:3][] | .tag] == ["HY2", "TROJAN-node"] and (.outbounds[1].type == "hysteria2")' <<<"$out" >/dev/null &&
+  jq -e "$direct | map(.domain_suffix // []) | add | (index(\".ru\") and index(\".by\") and index(\"example.com\") and index(\"split.example.org\"))" <<<"$out" >/dev/null &&
+  jq -e "$direct | map(.ip_cidr // []) | add | index(\"10.99.0.0/16\")" <<<"$out" >/dev/null &&
+  jq -e '[.route.rules[] | keys[] | select(startswith("process_"))] == []' <<<"$out" >/dev/null &&
+  jq -e --slurpfile p "$REPO/policy.json" '$p[0].ruleSets as $s |
+    ($p[0].presets[] | select(.name == "russia")) as $ru |
+    [.route.rule_set[] | {tag, url}] == [
+      {"tag": "geosite-\($ru.tag)", "url": "https://raw.githubusercontent.com/\($s.geosite)/\($s.branch)/\($ru.geosite)"},
+      {"tag": "geoip-\($ru.tag)", "url": "https://raw.githubusercontent.com/\($s.geoip)/\($s.branch)/\($ru.geoip)"}
+    ]' <<<"$out" >/dev/null &&
+  jq -e '.route.rule_set | all(.type == "remote" and .http_client == "through-proxy")' <<<"$out" >/dev/null &&
+  jq -e '.http_clients == [{"tag": "through-proxy", "detour": "proxy"}]' <<<"$out" >/dev/null &&
+  jq -e '.dns.servers | map(select(.tag == "remote"))[0].server == "1.1.1.1"' <<<"$out" >/dev/null &&
+  jq -e '.inbounds[0].route_exclude_address | index("192.168.0.0/16")' <<<"$out" >/dev/null &&
+  jq -e '.route.final == "proxy" and .experimental.cache_file.enabled' <<<"$out" >/dev/null &&
+  grep -q 'custom' "$SKVPN_ROOT/err"; then
+  ok
+else
+  fail "the phone config lost a profile, a piece of the host's policy, or kept a process rule"
+fi
+
+# Tailscale follows the host: a base that keeps the tailnet out of its TUN gets the
+# endpoint, its DNS and its route; --no-tailscale and a base without it get none
+world export-sfa-follows-the-host-tailnet
+sv add "$HY2" >/dev/null
+sfa_base
+with=$(sv export --sfa 2>/dev/null) || true
+without=$(sv export --sfa --no-tailscale 2>/dev/null) || true
+python3 "$REPO/non-nix/render-base.py" --skip-path-check >"$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+bare=$(sv export --sfa 2>/dev/null) || true
+has_tailnet() {
+  jq -e --slurpfile p "$REPO/policy.json" '
+    (.endpoints // []) == [{"type": "tailscale", "tag": "tailnet", "state_directory": "tailscale"}] and
+    (.route.rules | any(.outbound == "tailnet" and .ip_cidr == $p[0].tailnet)) and
+    (.dns.rules | any(.server == "tailnet"))' >/dev/null
+}
+if has_tailnet <<<"$with" && ! has_tailnet <<<"$without" &&
+  jq -e '.endpoints == null' <<<"$without" >/dev/null &&
+  jq -e '.endpoints == null' <<<"$bare" >/dev/null; then
+  ok
+else
+  fail "the phone's tailnet did not follow the host's, or --no-tailscale kept it"
+fi
+
+# A rule-set's source is found by its tag in policy.json, never by its path: the NixOS
+# base names the same file by a store path, which carries a hash and spells `!` as `not-`
+world export-sfa-names-rule-sets-by-tag
+sv add "$HY2" >/dev/null
+sfa_base
+jq '.route.rule_set |= map(.path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-anything.srs")' \
+  "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json" >"$SKVPN_ROOT/base.json"
+mv "$SKVPN_ROOT/base.json" "$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+out=$(sv export --sfa 2>/dev/null) || true
+if jq -e --slurpfile p "$REPO/policy.json" '($p[0].presets[] | select(.name == "russia")) as $ru |
+    .route.rule_set | map(select(.tag == "geosite-\($ru.tag)"))[0].url | endswith("/\($ru.geosite)")' \
+  <<<"$out" >/dev/null; then
+  ok
+else
+  fail "a rule-set was not named by its tag"
+fi
+
+# The host's guard rides along as a clash mode the phone can switch to: in Direct, the
+# guarded sites are refused and everything else leaves direct, the tailnet still through
+# its endpoint; in Rule, the usual routing. No guard on the host, no mode on the phone
+sfa_guard() {
+  python3 "$REPO/non-nix/render-base.py" --skip-path-check --render guard --guard-ai \
+    --guard-zone example.net >"$SKVPN_ROOT/etc/sing-box/guard.json"
+}
+
+world export-sfa-carries-the-guard-as-a-clash-mode
+sv add "$HY2" >/dev/null
+sfa_base
+sfa_guard
+out=$(sv export --sfa 2>/dev/null) || true
+if jq -e --slurpfile p "$REPO/policy.json" '"geosite-\($p[0].guard.tag)" as $ai |
+    .experimental.clash_api.default_mode == "Rule" and
+    ([.route.rules[] | select(.clash_mode == "Direct")] == [
+      {"clash_mode": "Direct", "domain_suffix": ["example.net"], "action": "reject"},
+      {"clash_mode": "Direct", "rule_set": [$ai], "action": "reject"},
+      {"clash_mode": "Direct", "outbound": "direct"}
+    ]) and
+    ([.dns.rules[] | select(.clash_mode == "Direct")] == [
+      {"clash_mode": "Direct", "domain_suffix": ["example.net"], "action": "predefined", "rcode": "REFUSED"},
+      {"clash_mode": "Direct", "rule_set": [$ai], "action": "predefined", "rcode": "REFUSED"},
+      {"clash_mode": "Direct", "action": "route", "server": "local"}
+    ]) and
+    (.route.rule_set | map(select(.tag == $ai))[0].url | endswith("/\($p[0].guard.geosite)")) and
+    ([.route.rules[] | .outbound == "tailnet"] | index(true)) <
+      ([.route.rules[] | .clash_mode == "Direct"] | index(true))' <<<"$out" >/dev/null; then
+  ok
+else
+  fail "the host guard did not become a Direct mode that refuses its sites, or it took the tailnet"
+fi
+
+world export-sfa-has-no-mode-without-a-guard
+sv add "$HY2" >/dev/null
+sfa_base
+out=$(sv export --sfa 2>/dev/null) || true
+if jq -e '(.experimental.clash_api == null) and ([.route.rules[], .dns.rules[] | select(has("clash_mode"))] == [])' \
+  <<<"$out" >/dev/null; then
+  ok
+else
+  fail "a phone got a guard mode the host does not have"
+fi
+
+# The real sing-box has to accept what the phone gets; the stub is first on PATH, so the
+# binary is the next one there. check proves the config parses, not that it starts
+# (PITFALLS.md), which the prototype on a phone did
+world export-sfa-passes-the-real-sing-box
+sv add "$HY2" "$TROJAN" >/dev/null
+sfa_base
+sfa_guard
+real=$(type -ap sing-box | grep -v -x -F "$HERE/stub/sing-box" | head -n 1 || true)
+sv export --sfa >"$SKVPN_ROOT/phone.json" 2>/dev/null || true
+if [[ -z "$real" ]]; then
+  fail "no real sing-box on PATH after the stub"
+elif err=$("$real" check -c "$SKVPN_ROOT/phone.json" 2>&1); then
+  ok
+else
+  fail "the real sing-box refused the phone config: $err"
+fi
+
 echo "split"
 
 split_file() { printf '%s/etc/sing-box/base.d/70-split.json' "$SKVPN_ROOT"; }

@@ -6,7 +6,7 @@ _skvpn() {
   local cmd=${COMP_WORDS[1]-}
 
   if ((COMP_CWORD == 1)); then
-    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restart restore boot split ping status --version" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restart restore boot split ping status export --version" -- "$cur")
     return
   fi
 
@@ -26,6 +26,9 @@ _skvpn() {
       else
         mapfile -t COMPREPLY < <(compgen -W "--servers $(skvpn ls --names 2>/dev/null)" -- "$cur")
       fi
+      ;;
+    export)
+      mapfile -t COMPREPLY < <(compgen -W "--sfa --no-tailscale $(skvpn ls --names 2>/dev/null)" -- "$cur")
       ;;
     status)
       if ((COMP_CWORD == 2)); then

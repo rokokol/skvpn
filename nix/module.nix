@@ -18,7 +18,7 @@ let
   cfg = config.services.skvpn;
 
   # Countries whose domestic destinations commonly have to leave around the tunnel, from
-  # policy.json, which the installer's renderer reads too. A list there, so two
+  # policy.json, which the installer's renderer and the CLI read too. A list there, so two
   # enabled presets render the same base on every eval. The rule-set data behind the tags
   # is pinned in this flake's own lock
   presets = map (

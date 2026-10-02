@@ -9,6 +9,8 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - a guard for the off state: with `guard.ai.enable`, `guard.zones` or `guard.geosite` on NixOS, or `--guard-ai`, `--guard-zone` and `--guard-geosite` for the installer, `skvpn down` starts a sing-box on the same base that sends everything direct but refuses the listed sites, by name lookup and by connection; boot starts it when there is no profile to restore, `skvpn up` stops it, `skvpn status` reports it and `skvpn restart` restarts it. The AI preset is the `geosite-category-ai-!cn` rule-set, pinned in the flake's lock like the country presets
 - `syncthing.enable`, following `services.syncthing.enable`, and the installer's `--syncthing` keep Syncthing's QUIC on the port its peers know
 - the distro suite runs the bypass script as the service user and proves the guard on the distribution's own sing-box: a guarded zone neither resolves nor connects by its TLS name, while an unlisted site does
+- `skvpn export [<name>]` prints the config a profile runs with on this host, merged by sing-box itself
+- `skvpn export --sfa` prints a whole config for sing-box for Android: every profile in one group the app switches on the fly, the host's direct policy with its rule-sets fetched by URL, the LAN kept outside the tunnel, the tailnet through the app's own Tailscale endpoint when the host runs Tailscale (`--no-tailscale` leaves it out), and the host's guard as a Direct mode that keeps refusing the guarded sites
 
 ### Fixed
 

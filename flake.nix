@@ -132,6 +132,9 @@
                   jq
                   procps
                   python3
+                  # The real one, behind the stub on PATH: the phone config has to pass
+                  # its check
+                  sing-box
                   systemd
                 ];
               }
@@ -439,6 +442,8 @@
             python3.pkgs.flake8
             shellcheck
             shfmt
+            # tests/run.sh checks the phone config with the real one, behind its stub
+            sing-box
           ];
         };
         ci-docker-routing = pkgs.mkShell {

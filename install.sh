@@ -571,6 +571,8 @@ install -Dm644 "$here/completions/_skvpn" "$root/share/zsh/site-functions/_skvpn
 rec "$root/share/zsh/site-functions/_skvpn"
 install -Dm644 "$here/VERSION" "$root/share/skvpn/VERSION"
 rec "$root/share/skvpn/VERSION"
+install -Dm644 "$here/policy.json" "$root/share/skvpn/policy.json"
+rec "$root/share/skvpn/policy.json"
 install -Dm755 "$here/nft-bypass.sh" "$root/lib/skvpn/nft-bypass"
 rec "$root/lib/skvpn/nft-bypass"
 

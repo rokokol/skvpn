@@ -61,6 +61,8 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn ping set <host\|url>` | the site to reach for; a bare host becomes `https://host/`, https only — sing-box's test quietly swaps a plain-http site for its own; default `https://www.google.com/generate_204` |
 | `skvpn status --ping [--servers]` | the status lines, then the ping table |
 | `skvpn status` | the active profile or the running guard, the boot choice (only while boot restore is enabled), the age of the last sync |
+| `skvpn export [<name>]` | the config a profile runs with here — the base, the split list and the profile merged by sing-box itself; the running profile when none is named |
+| `skvpn export --sfa [--no-tailscale] [<name>…]` | a whole config for [a phone](#a-phone) |
 
 Everything that writes or talks to systemd needs root, and so does `ping` (it reads the profiles); `ls --names`, `status`, `split ls` and a bare `boot` do not
 
@@ -74,6 +76,7 @@ Everything that writes or talks to systemd needs root, and so does `ping` (it re
 /etc/sing-box/base.d/70-split.json  the imperative split list — written by `skvpn split`
 /etc/sing-box/guard.json            the guard laid over the base, when one is configured
 /etc/sing-box/ping.url              the site `skvpn ping` reaches for, when set
+share/skvpn/policy.json             presets, the tailnet and the rule-sets' sources — installed beside the CLI
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default
 /var/lib/skvpn/boot                 a profile pinned for boot by `skvpn boot`, beating the above
@@ -94,6 +97,10 @@ Bypass only: a listed process name, executable path, destination address or site
 ### Guard
 
 With nothing up, every site is reached from your own address, and some services hold that against the account. The guard is what "off" means once you give it something to refuse: `skvpn down` starts a sing-box on the same base that sends everything direct but refuses the listed sites, both the name lookup and the connection, matched by the name asked for or the TLS name sent. Boot starts it when there is no profile to bring back, and `skvpn up` stops it. The AI preset refuses the AI services that turn sanctioned regions away, from a rule-set pinned like the country presets; your own zones and rule-sets add to it. A process or site on the split list still leaves direct, the same as with a profile up
+
+### A phone
+
+`sudo skvpn export --sfa` writes one config for [sing-box for Android](https://sing-box.sagernet.org/clients/android/) that carries the host's policy to the phone. Every profile, or the named ones, sits in one group the app switches between on the fly. Sites the host sends direct go direct here too, with the rule-sets fetched through the node by URL; process entries of the split list stay behind, since they name the host's programs. The LAN stays outside the tunnel, so devices there still reach the phone. When the host runs Tailscale, the phone joins the tailnet from inside the same app, since Android lets only one VPN run at a time; the app shows the login link under Tools → Endpoints. When the host has a guard, the app gets a Direct mode beside the usual Rule one: switching to it sends everything direct but keeps refusing the guarded sites, which is the phone's way of being off. The file carries the nodes' credentials, so move it the way you would move a password
 
 ### Living beside other tunnels
 

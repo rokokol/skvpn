@@ -86,6 +86,17 @@ EOF
   grep -qx 'ConditionPathExists=!/sys/class/net/skvpn-tun' /etc/systemd/system/skvpn-guard.service
   # The distribution's own sing-box has to accept the guard laid over the base
   sing-box check -C /etc/sing-box/base.d -c /etc/sing-box/guard.json
+  # The installed CLI finds policy.json under share/, and the phone config it builds from
+  # this host — the guard as a Direct mode included — passes the same sing-box
+  install -m 640 -g sing-box /dev/stdin /etc/sing-box/profiles/EXPORTED.json <<'EOF'
+{"outbounds":[{"type":"direct","tag":"proxy"}]}
+EOF
+  "$prefix/bin/skvpn" export --sfa >/tmp/skvpn-phone.json
+  grep -q '"clash_mode": "Direct"' /tmp/skvpn-phone.json
+  sing-box check -c /tmp/skvpn-phone.json
+  "$prefix/bin/skvpn" export EXPORTED >/tmp/skvpn-exported.json
+  sing-box check -c /tmp/skvpn-exported.json
+  rm -f /etc/sing-box/profiles/EXPORTED.json
 }
 
 # The imperative layer, written before the fixture sing-box starts so it reads the file

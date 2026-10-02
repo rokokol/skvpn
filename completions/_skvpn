@@ -32,6 +32,7 @@ _skvpn() {
     'split:route listed processes or addresses around the tunnel'
     'ping:measure latency through every profile with a throwaway sing-box'
     'status:show the active profile and sync age'
+    'export:print the config a profile runs with, or with --sfa a config for a phone'
     '--version:print the version'
   )
 
@@ -55,6 +56,10 @@ _skvpn() {
         compadd -- set
       fi
       compadd -- --servers
+      _skvpn_profiles
+      ;;
+    export)
+      compadd -- --sfa --no-tailscale
       _skvpn_profiles
       ;;
     status)
