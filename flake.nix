@@ -82,7 +82,8 @@
             one =
               input: file:
               builtins.path {
-                name = file;
+                # A store path name takes no `!`, which upstream spells "not" in its file names
+                name = builtins.replaceStrings [ "!" ] [ "not-" ] file;
                 path = "${input}/${file}";
               };
           in
@@ -93,6 +94,9 @@
             geoip-cn = one sing-geoip "geoip-cn.srs";
             geosite-ir = one sing-geosite "geosite-category-ir.srs";
             geoip-ir = one sing-geoip "geoip-ir.srs";
+            # The guard's AI preset: services outside China, the ones that refuse sanctioned
+            # regions
+            geosite-ai = one sing-geosite "geosite-category-ai-!cn.srs";
           };
       };
 
@@ -175,8 +179,9 @@
                 # module-test.nix would otherwise surface as a stray failure in whichever
                 # check read the key first — and jq answers 0 for the length of a missing one
                 want 'keys == [
-                  "aliases", "bareAliases", "bareBase", "bareEtc", "barePostStart", "base",
-                  "capabilities", "extra", "firewall", "offAliases", "offEtc", "offFirewall",
+                  "aliases", "bareAliases", "bareBase", "bareEtc", "barePostStart", "bareServices",
+                  "base", "capabilities", "extra", "firewall", "guard", "guardBase",
+                  "guardRestoreOffWantedBy", "guardUnit", "offAliases", "offEtc", "offFirewall",
                   "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "sudoRules", "timerInterval",
@@ -255,6 +260,31 @@
 
                 want '.restoreOffServices | sort == ["sing-box@", "skvpn-sync"]' "restore.enable = false left the unit in place"
 
+                # The guard: nothing to refuse, no guard
+                want '.bareServices | index("skvpn-guard") | not' "a guard unit exists with nothing to refuse"
+                want '.bareEtc | index("sing-box/guard.json") | not' "a guard config exists with nothing to refuse"
+                # Every source of sites refused, in DNS and in routing
+                want '.guard | fromjson | .dns.rules[:2] == [
+                  {"domain_suffix": [".example.com"], "action": "predefined", "rcode": "REFUSED"},
+                  {"rule_set": ["geosite-ai", "geosite-test"], "action": "predefined", "rcode": "REFUSED"}
+                ]' "a guarded site still resolves"
+                want '.guard | fromjson | .route.rules == [
+                  {"domain_suffix": [".example.com"], "action": "reject"},
+                  {"rule_set": ["geosite-ai", "geosite-test"], "action": "reject"}
+                ]' "a guarded site still connects"
+                want '.guard | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "a guard rule-set is not a store path"
+                want '.guard | fromjson | .route.rule_set[0].path | test("geosite-category-ai")' "the AI preset is not the pinned AI rule-set"
+                # The base keeps `final`, so the guard must make `proxy` itself direct and send
+                # the remaining DNS to the bootstrap instead of the DoT server through it
+                want '.guard | fromjson | .outbounds == [{"type": "direct", "tag": "proxy", "domain_resolver": "bootstrap"}]' "the guard's proxy is not a non-empty direct outbound"
+                want '.guard | fromjson | .dns.rules[-1] == {"action": "route", "server": "bootstrap"}' "unguarded names would go to DoT dialled direct"
+                want '.guardBase | fromjson | .route.final == "proxy"' "the guard changed the base"
+                want '.guardUnit.serviceConfig.ExecStart | endswith("-C /etc/sing-box/base.d -c /etc/sing-box/guard.json run")' "the guard does not run the base with its own file"
+                want '.guardUnit.serviceConfig.AmbientCapabilities | index("CAP_NET_ADMIN")' "the guard cannot make its TUN"
+                want '.guardUnit.postStart | test("nft-bypass apply")' "the guard misses the bypass rules"
+                want '.guardUnit.unitConfig.ConditionPathExists == "!/sys/class/net/test-tun"' "the guard would start beside a running profile"
+                want '.guardUnit.wantedBy == []' "the guard races boot restore"
+                want '.guardRestoreOffWantedBy == ["multi-user.target"]' "without restore nothing starts the guard at boot"
 
                 # …and everything can be turned off
                 want '.offEtc == []' "a config file survives disabling"
@@ -289,8 +319,8 @@
 
                 want 'keys == [
                   "dockerFollowBase", "enabledAlias", "enabledBase", "enabledBroken",
-                  "enabledExtra", "enabledFirewall", "enabledRestore", "enabledSudo",
-                  "enabledTimer", "enabledTmpfiles",
+                  "enabledExtra", "enabledFirewall", "enabledGuardConfig", "enabledGuardUnit",
+                  "enabledRestore", "enabledSudo", "enabledTimer", "enabledTmpfiles",
                   "hostStrictBroken", "hostStrictFirewall", "offAlias", "offBroken", "offEtc",
                   "offRestore", "offUser", "restoreOffPresent", "restoreOffTemplate",
                   "singBoxUserGroup", "syncthingFollowPostStart"
@@ -304,6 +334,10 @@
                 want '.dockerFollowBase | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "docker default bridge is not excluded"
                 want '.enabledExtra | fromjson | .log.level == "debug"' "extraSettings did not survive"
                 want '.syncthingFollowPostStart | endswith("apply --syncthing")' "syncthing.enable does not follow the host's Syncthing"
+                want '.enabledGuardConfig | fromjson | .route.rules[0].action == "reject"' "the guard config did not survive the real module set"
+                want '.enabledGuardUnit | test("ConditionPathExists=!/sys/class/net/skvpn-tun")' "the guard unit lost its running-profile condition"
+                want '.enabledGuardUnit | test("PATH=[^\n]*nftables")' "the guard unit has no nft on its PATH"
+                want '.enabledGuardUnit | test("ExecStartPost=")' "the guard unit lost its bypass rules"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"
                 want '.enabledFirewall == "loose"' "the reverse-path filter was not loosened"

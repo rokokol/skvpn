@@ -143,6 +143,28 @@ let
     };
   };
 
+  # The guard with every source of sites on, under a TUN name moved away from the default
+  guardOn = eval {
+    services.skvpn = {
+      enable = true;
+      tun.interfaceName = "test-tun";
+      guard = {
+        ai.enable = true;
+        zones = [ ".example.com" ];
+        geosite.geosite-test = geositeStub;
+      };
+    };
+  };
+
+  # Without restore nothing would start the guard at boot, so boot itself wants it
+  guardRestoreOff = eval {
+    services.skvpn = {
+      enable = true;
+      restore.enable = false;
+      guard.zones = [ ".example.com" ];
+    };
+  };
+
   # An entry that would catch sing-box itself has to be refused at eval time
   splitSingBox = eval {
     services.skvpn = {
@@ -174,6 +196,16 @@ in
   bareEtc = lib.attrNames bare.environment.etc;
   bareAliases = bare.environment.shellAliases;
   barePostStart = bare.systemd.services."sing-box@".postStart;
+  bareServices = lib.attrNames bare.systemd.services;
+
+  guard = guardOn.environment.etc."sing-box/guard.json".text;
+  guardBase = guardOn.environment.etc."sing-box/base.d/00-base.json".text;
+  guardUnit = {
+    inherit (guardOn.systemd.services.skvpn-guard) wantedBy postStart serviceConfig;
+    # A missing condition has to reach its own assertion, not stop the evaluation
+    unitConfig = guardOn.systemd.services.skvpn-guard.unitConfig or { };
+  };
+  guardRestoreOffWantedBy = guardRestoreOff.systemd.services.skvpn-guard.wantedBy;
 
   presetsBase = presetsOn.environment.etc."sing-box/base.d/00-base.json".text;
 

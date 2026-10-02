@@ -31,7 +31,7 @@ tests/               run.sh, distro.sh, stubs, golden parser outputs
 install.sh           installer and option parser for systems without Nix
 nft-bypass.sh        the units' ExecStartPost: return rules in sing-box's nft table, shipped
                      in the package and installed by install.sh
-non-nix/             renderer for the non-Nix base config
+non-nix/             renderer for the non-Nix base config and the guard
 PITFALLS.md          traps in sing-box and the tools around it
 WORKAROUNDS.md       what nft-bypass.sh works around in sing-box, and when it can go
 DEVIATIONS.md        where this repo departs on purpose from its family's route
@@ -45,6 +45,7 @@ DEVIATIONS.md        where this repo departs on purpose from its family's route
 - **profile names are public, contents are not.** The profiles directory is `2755` so `ls --names` (and completion through it) works without root; the files stay `0640` because they carry node credentials. `cmd_ls` must keep treating a per-file `PermissionError` as "try sudo", not as a crash
 - **the subscription tests run on `file://` URLs** — `urlopen` speaks the scheme, which is what lets sync's prune/spare logic run offline. The real fetch sends a custom `User-Agent`: the stock `Python-urllib` one gets 403 from Cloudflare bot rules
 - **`extraSettings` merges by sing-box `-C` semantics** (objects merge, arrays append, scalars replace) because it is written as a second `base.d` file — it cannot change a scalar inside an existing array element, and that is documented in the option, not worked around
+- **the guard is the off state, and `guard.json` is its switch** — the module and the renderer write it only when there is a site to refuse, and the CLI decides by the file alone, so `tests/run.sh` turns it on by writing one. The unit skips its start while the TUN exists, and a skipped start answers 0, which is why `start_guard` asks `is-active` afterwards
 - **the nft rules live in `nft-bypass.sh` only** — the module and `install.sh` pick its flags, `tests/docker-routing.sh` and the distro suite run the script itself; a rule copied anywhere else is a second source of truth
 - **`base.d/70-split.json` is CLI-owned state inside a directory the renderers own.** `skvpn split` writes it, neither NixOS nor `install.sh` knows it exists, and `--uninstall` leaves it like a profile. Every split rule is its own rule object routed `direct` because `-C` can only append — that is why the feature is bypass-only. sing-box has no hot reload, and `split add`/`rm` deliberately do **not** restart anything: they print the `skvpn restart` reminder, because dropping the tunnel is the user's call
 - **`skvpn boot` reserves the word `last`**, and `skvpn ping` reserves `set`; a profile with either name is reachable only through the forms that take no name

@@ -17,6 +17,9 @@ _install_sh_skvpn() {
     '--tailscale[keep Tailscale ranges and tailscaled traffic out of the TUN]' \
     '--docker[keep the docker0 and br-* bridges out of the TUN]' \
     '--syncthing[keep UDP from Syncthing port 22000 out of the TUN]' \
+    '--guard-ai[while no profile is up, refuse AI services]' \
+    '*--guard-zone[a domain suffix the guard refuses]:suffix:' \
+    '*--guard-geosite[a local domain rule-set the guard refuses]:tag=path:' \
     '--direct-russia[route Russian zones, geosite and geoip directly]' \
     '--direct-china[route Chinese zones, geosite and geoip directly]' \
     '--direct-iran[route Iranian zones, geosite and geoip directly]' \

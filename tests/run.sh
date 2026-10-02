@@ -332,6 +332,112 @@ else
   fail "status misreported the boot choice, or showed one with restore off"
 fi
 
+echo "guard"
+
+# The rendered guard config is the switch: the CLI reads no option, only this file
+guard_on() {
+  mkdir -p "$SKVPN_ROOT/etc/sing-box"
+  printf '{}\n' >"$SKVPN_ROOT/etc/sing-box/guard.json"
+}
+
+# Line number of the first systemctl call matching $1, so the order of two can be asked:
+# a profile and the guard make the same TUN, and only stop-then-start can work
+# No match prints nothing and is not an error: the case names the miss, set -e must not
+call_at() { { grep -n -m1 -F "$1" "$SYSTEMCTL_LOG" || true; } | cut -d: -f1; }
+
+world down-without-guard-starts-nothing
+FAKE_ACTIVE=HY2
+export FAKE_ACTIVE
+sv down >/dev/null
+if ! grep -q start "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down started something with no guard configured"
+fi
+
+world down-starts-the-guard
+guard_on
+FAKE_ACTIVE=HY2
+export FAKE_ACTIVE
+out=$(sv down)
+stopped=$(call_at 'stop sing-box@HY2.service')
+started=$(call_at 'start skvpn-guard.service')
+if [[ -n "$stopped" && -n "$started" ]] && ((stopped < started)) && [[ "$out" == *guard* ]]; then
+  ok
+else
+  fail "down did not stop the profile before starting the guard"
+fi
+
+# A start the unit's own condition skipped answers 0; the CLI must not call that a guard
+world down-reports-a-guard-that-stayed-down
+guard_on
+export SYSTEMCTL_FAIL='is-active'
+if ! err=$(sv down 2>&1) && [[ "$err" == *"guard did not come up"* ]]; then
+  ok
+else
+  fail "down claimed a guard that never came up"
+fi
+
+world up-stops-the-guard
+sv add "$HY2" >/dev/null
+guard_on
+sv up HY2 >/dev/null
+stopped=$(call_at 'stop skvpn-guard.service')
+started=$(call_at 'start sing-box@HY2.service')
+if [[ -n "$stopped" && -n "$started" ]] && ((stopped < started)); then
+  ok
+else
+  fail "up did not stop the guard before starting the profile"
+fi
+
+world up-falls-back-to-the-guard
+sv add "$HY2" >/dev/null
+guard_on
+export SYSTEMCTL_FAIL='start sing-box@HY2'
+if ! sv up HY2 >/dev/null 2>&1 && grep -q 'start skvpn-guard.service' "$SYSTEMCTL_LOG" &&
+  [[ ! -e $(active_file) ]]; then
+  ok
+else
+  fail "a profile that failed to start left the host unguarded, or was remembered"
+fi
+
+world restore-starts-the-guard-with-no-choice
+guard_on
+if sv restore >/dev/null && grep -q 'start --no-block skvpn-guard.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "boot with nothing to restore left the host unguarded"
+fi
+
+world restore-guards-a-missing-profile
+guard_on
+mkdir -p "$(dirname "$(active_file)")"
+printf 'gone\n' >"$(active_file)"
+if ! sv restore >/dev/null 2>&1 && grep -q 'start --no-block skvpn-guard.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "a remembered profile that is gone left boot unguarded, or passed quietly"
+fi
+
+world restart-restarts-the-guard
+guard_on
+if sv restart >/dev/null 2>&1 && grep -q 'restart skvpn-guard.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "restart with only the guard up did not restart it"
+fi
+
+world status-shows-the-guard
+guard_on
+on=$(sv status)
+export SYSTEMCTL_FAIL='is-active'
+off=$(sv status)
+if [[ "$on" == *"  profile   none, guard on"* && "$off" == *"  profile   none"* && "$off" != *guard* ]]; then
+  ok
+else
+  fail "status did not tell a guarded off from a bare one"
+fi
+
 echo "split"
 
 split_file() { printf '%s/etc/sing-box/base.d/70-split.json' "$SKVPN_ROOT"; }
@@ -939,7 +1045,7 @@ world installer-help-lists-every-feature
 help=$("$REPO/install.sh" --help)
 missing=""
 for option in help version prefix destdir uninstall no-systemd tailscale docker syncthing \
-  direct-russia direct-china direct-iran direct-zone direct-geosite \
+  guard-ai guard-zone guard-geosite direct-russia direct-china direct-iran direct-zone direct-geosite \
   direct-geoip split tun-interface tun-address dns-server extra-settings no-restore sync-interval \
   trusted-user fix-discord-voice stack no-ipv6; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"
@@ -1180,6 +1286,77 @@ if grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale --d
   ok
 else
   fail "the bypass script is missing, unrecorded, or the unit runs it with the wrong flags"
+fi
+
+guard_stage() { printf '%s/stage/etc/%s' "$SKVPN_ROOT" "$1"; }
+
+# The same guard nix/module.nix renders: every source refused in DNS and in routing, `proxy`
+# made direct, the remaining names to the bootstrap
+world installer-renders-the-guard
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --guard-ai --guard-zone .example.com \
+  --guard-geosite geosite-test=/rules/test.srs --tun-interface friend-tun --tailscale >/dev/null
+guard="$(guard_stage sing-box/guard.json)"
+unit="$(guard_stage systemd/system/skvpn-guard.service)"
+if jq -e '.dns.rules == [
+    {"domain_suffix": [".example.com"], "action": "predefined", "rcode": "REFUSED"},
+    {"rule_set": ["geosite-ai", "geosite-test"], "action": "predefined", "rcode": "REFUSED"},
+    {"action": "route", "server": "bootstrap"}
+  ]' "$guard" >/dev/null &&
+  jq -e '.route.rules == [
+    {"domain_suffix": [".example.com"], "action": "reject"},
+    {"rule_set": ["geosite-ai", "geosite-test"], "action": "reject"}
+  ]' "$guard" >/dev/null &&
+  jq -e '.outbounds == [{"type": "direct", "tag": "proxy", "domain_resolver": "bootstrap"}]' "$guard" >/dev/null &&
+  jq -e '.route.rule_set[0].path == "/usr/share/sing-box/rule-set/geosite-category-ai-!cn.srs"' "$guard" >/dev/null &&
+  grep -qx 'ConditionPathExists=!/sys/class/net/friend-tun' "$unit" &&
+  grep -qx 'ExecStart=/usr/bin/sing-box -D /var/lib/skvpn-guard -C /etc/sing-box/base.d -c /etc/sing-box/guard.json run' "$unit" &&
+  grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale' "$unit" &&
+  grep -qx 'AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH' "$unit"; then
+  ok
+else
+  fail "the installer's guard drifted from the module's, or its unit cannot run it"
+fi
+
+# Declarative: a run without the guard flags takes the guard away, the way unsetting the
+# NixOS options does
+world installer-drops-the-guard-without-its-flags
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --guard-zone .example.com >/dev/null
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
+if [[ ! -e "$(guard_stage sing-box/guard.json)" && ! -e "$(guard_stage systemd/system/skvpn-guard.service)" ]] &&
+  ! grep -q guard "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
+  ok
+else
+  fail "a flagless run left the guard behind"
+fi
+
+# Boot wants the guard only when nothing restores, since restore starts it itself
+world installer-enables-the-guard-only-without-restore
+installer_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+  "RESTART_SETTLE_TICKS=0"
+)
+# Whole lines: "disable skvpn-guard.service" contains "enable skvpn-guard.service"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --guard-zone .example.com >/dev/null
+mv "$SYSTEMCTL_LOG" "$SKVPN_ROOT/with-restore.log"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --guard-zone .example.com --no-restore >/dev/null
+mv "$SYSTEMCTL_LOG" "$SKVPN_ROOT/without-restore.log"
+env "${installer_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall >/dev/null
+if grep -qx 'disable skvpn-guard.service' "$SKVPN_ROOT/with-restore.log" &&
+  ! grep -qx 'enable skvpn-guard.service' "$SKVPN_ROOT/with-restore.log" &&
+  grep -qx 'enable skvpn-guard.service' "$SKVPN_ROOT/without-restore.log" &&
+  grep -qx 'disable skvpn-guard.service' "$SYSTEMCTL_LOG" &&
+  [[ ! -e "$SKVPN_ROOT/systemd/skvpn-guard.service" && ! -e "$SKVPN_ROOT/usr/lib/skvpn" ]]; then
+  ok
+else
+  fail "boot wants the guard beside restore, misses it without, or uninstall leaves it"
 fi
 
 # --no-systemd is a real install that must not say a word to systemd; the stub log is

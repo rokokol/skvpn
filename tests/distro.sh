@@ -30,8 +30,9 @@ declare -A IMAGE=(
 # declared layer of the split test below: curl goes direct by process name, and the
 # path wildcard and the CIDR are there for the installed sing-box to accept — a field
 # the distribution's build does not know would refuse the whole base. The bypass flags
-# give the script every rule it has
-INSTALL_FLAGS=(--no-systemd --docker --tailscale --syncthing --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
+# give the script every rule it has, and the guard zone is the site the guard test refuses —
+# without a leading dot, which in sing-box would match the subdomains only
+INSTALL_FLAGS=(--no-systemd --docker --tailscale --syncthing --guard-zone example.org --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
 UNINSTALL_FLAGS=(--no-systemd)
 
 # Bootstrap: only what the harness itself needs in a minimal image — never a dependency
@@ -82,6 +83,9 @@ EOF
   test -f /etc/systemd/system/sing-box@.service.d/skvpn.conf
   grep -qx "ExecStartPost=$prefix/lib/skvpn/nft-bypass apply --docker --tailscale --syncthing" \
     /etc/systemd/system/sing-box@.service.d/skvpn.conf
+  grep -qx 'ConditionPathExists=!/sys/class/net/skvpn-tun' /etc/systemd/system/skvpn-guard.service
+  # The distribution's own sing-box has to accept the guard laid over the base
+  sing-box check -C /etc/sing-box/base.d -c /etc/sing-box/guard.json
 }
 
 # The imperative layer, written before the fixture sing-box starts so it reads the file
@@ -268,6 +272,48 @@ EOF
 
   say "skvpn ping measures outside the active TUN, through the distribution's sing-box"
   ping_smoke "$prefix"
+
+  say "the guard refuses its zone by name and by TLS name, and lets the rest out"
+  kill "$sing_box_pid"
+  wait "$sing_box_pid" 2>/dev/null || true
+  sing_box_pid=""
+  for _ in {1..50}; do
+    [[ -e /sys/class/net/skvpn-tun ]] || break
+    sleep 0.1
+  done
+  # Looked up with no TUN, so the TLS case below can reach the guard without DNS
+  local guarded_ip
+  read -r guarded_ip _ < <(getent ahostsv4 example.org)
+  [[ -n "$guarded_ip" ]] || return 1
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
+    -c /etc/sing-box/guard.json run >/tmp/skvpn-guard.log 2>&1 &
+  sing_box_pid=$!
+  for _ in {1..50}; do
+    [[ -e /sys/class/net/skvpn-tun ]] && break
+    sleep 0.1
+  done
+  [[ -e /sys/class/net/skvpn-tun ]] || {
+    cat /tmp/skvpn-guard.log >&2
+    return 1
+  }
+  # curl is a declared split name, and a split entry leaves before the guard by design;
+  # the same binary under another name is the unlisted client
+  cp "$(command -v curl)" /tmp/fetch
+  if timeout 20 /tmp/fetch -fsS -o /dev/null https://example.org/ 2>/dev/null; then
+    echo "  !! a guarded zone still resolved" >&2
+    return 1
+  fi
+  if timeout 20 /tmp/fetch -fsS -o /dev/null --resolve "example.org:443:$guarded_ip" https://example.org/ 2>/dev/null; then
+    echo "  !! a guarded zone still connected by its TLS name" >&2
+    return 1
+  fi
+  timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ ||
+    timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ || {
+    echo "  !! the guard refused a site nobody listed" >&2
+    return 1
+  }
 
   dind_cleanup
   trap - RETURN

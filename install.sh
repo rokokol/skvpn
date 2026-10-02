@@ -32,6 +32,7 @@ SYSTEMD=1
 CONFIG_ARGS=()
 # Flags for nft-bypass.sh, which the units run once sing-box has made its table
 BYPASS_FLAGS=()
+TUN_INTERFACE=skvpn-tun
 RESTORE=1
 SYNC_INTERVAL=daily
 EXTRA_SETTINGS=""
@@ -63,6 +64,11 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
   --docker             keep the docker0 bridge and dynamic br-* bridges out of the TUN
   --syncthing          keep UDP from Syncthing's port 22000 out of the TUN, so its QUIC
                        keeps the source port peers know
+  --guard-ai           while no profile is up, run a guard that refuses AI services:
+                       the geosite-category-ai-!cn rule-set
+  --guard-zone SUFFIX  a domain suffix the guard refuses; repeatable
+  --guard-geosite TAG=PATH
+                       a local domain rule-set the guard refuses; repeatable
   --direct-russia      route Russian zones, geosite and geoip directly
   --direct-china       route Chinese zones, geosite and geoip directly
   --direct-iran        route Iranian zones, geosite and geoip directly
@@ -143,6 +149,10 @@ while [[ $# -gt 0 ]]; do
       BYPASS_FLAGS+=("$1")
       shift
       ;;
+    --guard-ai)
+      CONFIG_ARGS+=("$1")
+      shift
+      ;;
     --no-ipv6)
       CONFIG_ARGS+=(--no-ipv6)
       shift
@@ -151,9 +161,11 @@ while [[ $# -gt 0 ]]; do
       CONFIG_ARGS+=(--preset "${1#--direct-}")
       shift
       ;;
-    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack)
+    --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack | --guard-zone | --guard-geosite)
       (($# >= 2)) || die "$1 needs a value"
       CONFIG_ARGS+=("$1" "$2")
+      # The guard unit skips its start while this interface exists
+      [[ "$1" != --tun-interface ]] || TUN_INTERFACE="$2"
       shift 2
       ;;
     --split)
@@ -235,6 +247,8 @@ extra_config="$sysconf_root/sing-box/base.d/50-extra.json"
 profiles_dir="$sysconf_root/sing-box/profiles"
 skvpn_bin="$PREFIX/bin/skvpn"
 sing_box_dropin="$unit_root/sing-box@.service.d/skvpn.conf"
+guard_config="$sysconf_root/sing-box/guard.json"
+guard_unit="$unit_root/skvpn-guard.service"
 bypass_bin="$PREFIX/lib/skvpn/nft-bypass"
 bypass_command="$bypass_bin apply${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
@@ -413,12 +427,16 @@ disable_discord_voice_fix() {
   fi
 }
 
-# The sing-box@<profile> instances systemd reports active, into active_units
+# The sing-box@<profile> instances systemd reports active, and the guard when this install
+# has one and it runs, into active_units
 collect_active_units() {
   active_units=()
   while read -r unit _; do
     [[ -n "$unit" ]] && active_units+=("$unit")
   done < <(systemctl list-units --plain --no-legend --state=active 'sing-box@*.service')
+  if [[ -f "$guard_unit" ]] && systemctl is-active --quiet skvpn-guard.service; then
+    active_units+=(skvpn-guard.service)
+  fi
 }
 
 if ((UNINSTALL)); then
@@ -437,6 +455,7 @@ if ((UNINSTALL)); then
   if ((managed && live_sys)); then
     systemctl disable --now skvpn-sync.timer >/dev/null
     systemctl disable skvpn-restore.service >/dev/null 2>&1 || true
+    systemctl disable skvpn-guard.service >/dev/null 2>&1 || true
     collect_active_units
     if ((${#active_units[@]})); then
       systemctl stop "${active_units[@]}"
@@ -475,6 +494,11 @@ cleanup() {
 }
 trap cleanup EXIT
 python3 "$here/non-nix/render-base.py" "${render_args[@]}" >"$rendered_base"
+rendered_guard=$(mktemp)
+temporary_files+=("$rendered_guard")
+python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render guard >"$rendered_guard"
+guard=0
+[[ "$(<"$rendered_guard")" == null ]] || guard=1
 if [[ -n "$EXTRA_SETTINGS" ]]; then
   python3 -c 'import json, sys; value = json.load(open(sys.argv[1])); sys.exit(0 if isinstance(value, dict) else "extra settings must be a JSON object")' "$EXTRA_SETTINGS"
 fi
@@ -519,7 +543,7 @@ if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
     "$base_config" "$extra_config" "$sing_box_dropin"
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
     "$unit_root/skvpn-sync.timer" "$sudoers_file" "$profile_file" "$sysctl_file"
-    "$root/lib/skvpn/nft-bypass"
+    "$guard_config" "$guard_unit" "$root/lib/skvpn/nft-bypass"
   )
   for path in "${managed_paths[@]}"; do
     [[ ! -e "$path" ]] || {
@@ -552,7 +576,7 @@ rec "$root/lib/skvpn/nft-bypass"
 
 # What the running instance is on right now, kept until it has proven the new base:
 # a base sing-box rejects would otherwise take the tunnel down with nothing to go back to
-base_files=("$base_config" "$extra_config" "$sing_box_dropin")
+base_files=("$base_config" "$extra_config" "$sing_box_dropin" "$guard_config" "$guard_unit")
 backup_dir=""
 if ((live_sys)); then
   backup_dir=$(mktemp -d)
@@ -623,6 +647,44 @@ Environment=NFT=$NFT
 ExecStartPost=$bypass_command
 EOF
 rec "$sing_box_dropin"
+
+# The guard: the same base under its own file, run while no profile is up. A whole unit
+# rather than a drop-in — nothing of the distribution's ships for it
+if ((guard)); then
+  install -Dm644 "$rendered_guard" "$guard_config"
+  rec "$guard_config"
+  install -Dm644 /dev/stdin "$guard_unit" <<EOF
+[Unit]
+Description=sing-box guard: no profile up, listed sites refused
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+# A profile and the guard make the same TUN: while it exists something is already up
+ConditionPathExists=!/sys/class/net/$TUN_INTERFACE
+
+[Service]
+User=$SERVICE_USER
+Group=$SERVICE_GROUP
+StateDirectory=skvpn-guard
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+ExecStart=$SING_BOX -D $LOCALSTATEDIR/lib/skvpn-guard -C $SYSCONFDIR/sing-box/base.d -c $SYSCONFDIR/sing-box/guard.json run
+Environment=NFT=$NFT
+ExecStartPost=$bypass_command
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  rec "$guard_unit"
+else
+  if ((live_sys)) && [[ -f "$guard_unit" ]]; then
+    systemctl disable --now skvpn-guard.service >/dev/null 2>&1 || true
+  fi
+  rm -f "$guard_config" "$guard_unit"
+fi
 
 if ((RESTORE)); then
   install -Dm644 /dev/stdin "$unit_root/skvpn-restore.service" <<EOF
@@ -716,6 +778,13 @@ if ((live_sys)); then
     systemctl enable skvpn-restore.service >/dev/null
   else
     systemctl disable --now skvpn-restore.service >/dev/null 2>&1 || true
+  fi
+  # Boot wants the guard only when nothing restores: restore starts it itself, and the two
+  # starting together would race for the one TUN
+  if ((guard && ! RESTORE)); then
+    systemctl enable skvpn-guard.service >/dev/null
+  elif ((guard)); then
+    systemctl disable skvpn-guard.service >/dev/null 2>&1 || true
   fi
   systemctl enable --now skvpn-sync.timer >/dev/null
 

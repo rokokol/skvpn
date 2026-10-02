@@ -55,6 +55,10 @@ ACTIVE = ROOT / "var/lib/skvpn/active"
 # A profile pinned for boot by hand; without it boot follows ACTIVE, the last `up`
 BOOT = ROOT / "var/lib/skvpn/boot"
 UNIT = "sing-box@{}.service"
+# What runs while no profile is up, when the base was rendered with sites to refuse; the
+# file's presence is the whole question of whether there is a guard at all
+GUARD = CONF / "guard.json"
+GUARD_UNIT = "skvpn-guard.service"
 MAX_AGE = 24 * 3600
 
 # Cloudflare's bot rules answer 403 to the stock Python-urllib agent
@@ -126,10 +130,14 @@ def probe(*args):
     return subprocess.run(["systemctl", *args], capture_output=True, text=True, check=False)
 
 
+def failure(result):
+    return result.stderr.strip().splitlines()[0] if result.stderr.strip() else "systemctl failed"
+
+
 def systemctl(*args):
     result = probe(*args)
     if result.returncode != 0:
-        die(result.stderr.strip().splitlines()[0] if result.stderr.strip() else "systemctl failed")
+        die(failure(result))
 
 
 def running():
@@ -140,6 +148,34 @@ def running():
         if unit.startswith("sing-box@") and unit.endswith(".service"):
             return unit.removeprefix("sing-box@").removesuffix(".service")
     return None
+
+
+def guard_active():
+    return GUARD.exists() and probe("is-active", "--quiet", GUARD_UNIT).returncode == 0
+
+
+def start_guard(wait=True):
+    """The off state, when there is a guard to be in. The unit skips itself while a TUN
+    is still there, and a skipped start answers 0 — so a waited start is asked again."""
+    if not GUARD.exists():
+        return
+    if not wait:
+        systemctl("start", "--no-block", GUARD_UNIT)
+    else:
+        systemctl("start", GUARD_UNIT)
+        if not guard_active():
+            die(f"the guard did not come up — see journalctl -u {GUARD_UNIT}")
+    print("  ⛨  guard")
+
+
+def stop_active():
+    """Stop whatever runs — the profile or the guard — leaving the boot choice alone."""
+    active = running()
+    if active:
+        systemctl("stop", UNIT.format(active))
+        print(f"  ×  {active}")
+    if GUARD.exists():
+        systemctl("stop", GUARD_UNIT)
 
 
 def restore_enabled():
@@ -897,8 +933,13 @@ def cmd_up(args):
     # fail at the unit and still be remembered as the boot choice
     if not profile_path(name).exists():
         die(f"the subscription no longer carries {name}")
-    cmd_down([])
-    systemctl("start", UNIT.format(name))
+    stop_active()
+    ACTIVE.unlink(missing_ok=True)
+    result = probe("start", UNIT.format(name))
+    if result.returncode != 0:
+        # The old profile is already stopped: fall back to off, which is the guarded state
+        start_guard()
+        die(failure(result))
     # Remembered only once it is up, so a broken profile is not replayed on every boot
     ACTIVE.parent.mkdir(parents=True, exist_ok=True)
     ACTIVE.write_text(name + "\n")
@@ -907,19 +948,21 @@ def cmd_up(args):
 
 def cmd_down(_args):
     need_root()
-    active = running()
-    if active:
-        systemctl("stop", UNIT.format(active))
-        print(f"  ×  {active}")
+    stop_active()
     ACTIVE.unlink(missing_ok=True)
+    start_guard()
 
 
 def cmd_restart(_args):
     """Start the active profile over on the base as it is now — the way a changed split
-    list, or any other base.d edit, gets onto the wire."""
+    list, or any other base.d edit, gets onto the wire. With no profile up, the guard."""
     need_root()
     active = running()
     if active is None:
+        if guard_active():
+            systemctl("restart", GUARD_UNIT)
+            print("  ↻  guard")
+            return
         die("nothing is up — `skvpn up <name>` starts a profile")
     systemctl("restart", UNIT.format(active))
     print(f"  ↻  {active}")
@@ -927,12 +970,15 @@ def cmd_restart(_args):
 
 def cmd_restore(_args):
     """Boot-time half of `up` — no fetching and no choosing, just the pin or what was
-    last up."""
+    last up; the guard when there is nothing to bring back."""
     need_root()
     name, _ = boot_choice()
     if name is None:
+        start_guard(wait=False)
         return
     if not profile_path(name).exists():
+        # Off is the guarded state, and boot is never left unguarded over a missing file
+        start_guard(wait=False)
         die(f"remembered profile is gone: {name}")
     systemctl("start", "--no-block", UNIT.format(name))
     print(f"  →  {name}")
@@ -996,7 +1042,10 @@ def cmd_status(args):
     if args:
         need_root()
     active = running()
-    print(f"  profile   {active or 'none'}")
+    if active is None and guard_active():
+        print("  profile   none, guard on")
+    else:
+        print(f"  profile   {active or 'none'}")
     # A choice is kept either way, but with restore off it is not what boot does
     if boot_choice()[0] is not None and restore_enabled():
         print(boot_line())

@@ -50,9 +50,9 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn rm <name>…` | delete profiles; the running one is refused |
 | `skvpn ls [--names \| --servers]` | list profiles; `--names` prints bare names and needs no root; `--servers` adds each node's address, kept out of the table otherwise |
 | `skvpn up <name>` | sync if stale, stop the active profile, start this one, remember it for boot |
-| `skvpn down` | stop the active profile and forget the boot choice |
-| `skvpn restart` | start the active profile over on the base as it is now — how a changed split list gets onto the wire |
-| `skvpn restore` | start the profile chosen for boot — the boot-time half of `up` |
+| `skvpn down` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, start it |
+| `skvpn restart` | start the active profile over on the base as it is now — how a changed split list gets onto the wire; with only the guard up, the guard |
+| `skvpn restore` | start the profile chosen for boot — the boot-time half of `up`; the guard when there is nothing to bring back |
 | `skvpn boot [<name> \| last]` | pin a profile for boot regardless of what is up; `last` goes back to following `up`; no argument shows the choice |
 | `skvpn split add [name\|path\|ip\|domain] <value>…` | route a process (by name, the default), an executable (absolute path), an address/CIDR or a site (a bare name, a URL or `*.example.com`) around the tunnel; asks for a `skvpn restart` |
 | `skvpn split rm [name\|path\|ip\|domain] <value>…` | drop split entries; same reminder |
@@ -60,7 +60,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn ping [--servers] [<name>…]` | latency to the ping site through every profile, or the named ones, without switching: one throwaway sing-box carries them all; `--servers` adds the addresses |
 | `skvpn ping set <host\|url>` | the site to reach for; a bare host becomes `https://host/`, https only — sing-box's test quietly swaps a plain-http site for its own; default `https://www.google.com/generate_204` |
 | `skvpn status --ping [--servers]` | the status lines, then the ping table |
-| `skvpn status` | the active profile, the boot choice (only while boot restore is enabled), the age of the last sync |
+| `skvpn status` | the active profile or the running guard, the boot choice (only while boot restore is enabled), the age of the last sync |
 
 Everything that writes or talks to systemd needs root, and so does `ping` (it reads the profiles); `ls --names`, `status`, `split ls` and a bare `boot` do not
 
@@ -72,6 +72,7 @@ Everything that writes or talks to systemd needs root, and so does `ping` (it re
 /etc/sing-box/base.d/00-base.json   TUN, DNS, routing — rendered by NixOS or the installer
 /etc/sing-box/base.d/50-extra.json  extraSettings, when set
 /etc/sing-box/base.d/70-split.json  the imperative split list — written by `skvpn split`
+/etc/sing-box/guard.json            the guard laid over the base, when one is configured
 /etc/sing-box/ping.url              the site `skvpn ping` reaches for, when set
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default
@@ -90,9 +91,13 @@ Bypass only: a listed process name, executable path, destination address or site
 
 **A change needs a restart, and asks for it.** sing-box reads its routing rules only at start, and dropping the tunnel is your call: `skvpn split add`/`rm` write the file and print `<active> is still on the old rules — apply with sudo skvpn restart`; with nothing running they say the rule takes effect on the next `up`. `skvpn split ls` shows both lists, the declared one marked `declared`. Neither `--uninstall` nor a NixOS rebuild touches `70-split.json`: it is state, like the profiles
 
+### Guard
+
+With nothing up, every site is reached from your own address, and some services hold that against the account. The guard is what "off" means once you give it something to refuse: `skvpn down` starts a sing-box on the same base that sends everything direct but refuses the listed sites, both the name lookup and the connection, matched by the name asked for or the TLS name sent. Boot starts it when there is no profile to bring back, and `skvpn up` stops it. The AI preset refuses the AI services that turn sanctioned regions away, from a rule-set pinned like the country presets; your own zones and rule-sets add to it. A process or site on the split list still leaves direct, the same as with a profile up
+
 ### Living beside other tunnels
 
-Tailscale, Syncthing and Docker keep their own paths while a profile is up: tailscaled's peer traffic stays off the tunnel, so two hosts on one network reach each other directly rather than through the exit; Syncthing's QUIC keeps the port its peers know; containers on any Docker bridge reach the network as before. Each follows the matching service on NixOS and is a flag for the installer. A UDP service answering the internet keeps working either way — why it needed help is in [WORKAROUNDS.md](WORKAROUNDS.md)
+Tailscale, Syncthing and Docker keep their own paths while a profile or the guard is up: tailscaled's peer traffic stays off the tunnel, so two hosts on one network reach each other directly rather than through the exit; Syncthing's QUIC keeps the port its peers know; containers on any Docker bridge reach the network as before. Each follows the matching service on NixOS and is a flag for the installer. A UDP service answering the internet keeps working either way — why it needed help is in [WORKAROUNDS.md](WORKAROUNDS.md)
 
 Subscription bodies are fetched with a custom `User-Agent` — Cloudflare's bot rules answer 403 to the stock Python one. Profiles you `add` by hand are never overwritten or pruned by a sync: the manifest remembers which names came from the subscription. The converse holds too — an `add` over a subscription-owned name keeps that name in the manifest, so the next sync writes the subscription's version back
 
@@ -128,6 +133,8 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `direct.zones` | `[ ]` | domain suffixes resolved by the local bootstrap and routed past the tunnel |
 | `direct.geosite` / `direct.geoip` | `{ }` | local binary rule-sets routed direct, keyed by tag; local on purpose — a remote set would arrive through the tunnel it is meant to steer |
 | `split.names` / `split.paths` / `split.ips` | `[ ]` | split tunnelling in the bypass sense: process names, absolute executable paths and destination CIDRs that leave around the tunnel; names and paths take `*`/`?` wildcards, and the process kinds resolve locally too. `skvpn split add` keeps an imperative list beside these |
+| `guard.ai.enable` | `false` | while no profile is up, refuse AI services: the `geosite-category-ai-!cn` rule-set pinned in this flake's lock. It is wide on purpose and catches developer tools too |
+| `guard.zones` / `guard.geosite` | `[ ]` / `{ }` | more domain suffixes and local rule-sets for the guard to refuse; any of the three turns the guard on |
 | `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges and tailscaled's own peer traffic out of the TUN |
 | `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: follow the configured default bridge name, bypass dynamic `br-*` interfaces in nftables, and exclude `virtualisation.docker.daemon.settings.default-address-pools` from TUN routes |
 | `syncthing.enable` | follows `services.syncthing.enable` | keep Syncthing's QUIC on the port its peers know |
@@ -170,7 +177,7 @@ The Arch package supplies the binary, service user and template unit. The instal
 
 Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific guidance when anything is missing — every runnable line as `$ command`, exactly what to type; nothing is ever installed on your behalf
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--syncthing`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--syncthing`, `--guard-ai`, repeatable `--guard-zone` and `--guard-geosite TAG=PATH`, `--direct-russia`, `--direct-china`, `--direct-iran`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set

@@ -142,7 +142,53 @@ let
     ++ lib.optional cfg.syncthing.enable "--syncthing"
   );
 
-  # The unit's shape bar the config and state paths it is started with
+  # The guard is what runs while no profile is up, and exists only with something to refuse
+  guardGeosite =
+    lib.optionalAttrs cfg.guard.ai.enable { inherit (ruleSetFiles) geosite-ai; } // cfg.guard.geosite;
+  guardMatches =
+    lib.optional (cfg.guard.zones != [ ]) { domain_suffix = cfg.guard.zones; }
+    ++ lib.optional (guardGeosite != { }) { rule_set = lib.attrNames guardGeosite; };
+  guardEnabled = guardMatches != [ ];
+
+  # Laid over the same base as a profile is. sing-box merges every file sorted by path, the
+  # first scalar winning and arrays appending, so this file cannot move `final` and its
+  # rules land after the base's and the split list's (PITFALLS.md). It needs neither:
+  # `proxy` itself is direct here, and a listed site is refused before `final` is reached
+  guardConfig = {
+    outbounds = [
+      {
+        type = "direct";
+        tag = "proxy";
+        # The base's DoT server dials through `proxy`, and sing-box refuses to start a detour
+        # to a direct outbound with every dialer option at its default (PITFALLS.md). This
+        # one restates the base's own default resolver, which changes nothing but that
+        domain_resolver = "bootstrap";
+      }
+    ];
+    dns.rules =
+      map (
+        match:
+        match
+        // {
+          action = "predefined";
+          rcode = "REFUSED";
+        }
+      ) guardMatches
+      # Everything else to the local resolver: `final` stays the base's DoT server, which
+      # would now be dialled direct, and a DoT server dialled direct is blocked in Russia
+      ++ [
+        {
+          action = "route";
+          server = "bootstrap";
+        }
+      ];
+    route = {
+      rules = map (match: match // { action = "reject"; }) guardMatches;
+      rule_set = lib.mapAttrsToList ruleSetFile guardGeosite;
+    };
+  };
+
+  # What a profile instance and the guard share; only the config and state paths differ
   singBoxService = {
     after = [
       "network-online.target"
@@ -470,6 +516,37 @@ in
         };
       };
 
+    guard = {
+      ai.enable = lib.mkEnableOption "" // {
+        description = ''
+          Refuse AI services while no profile is up: the `geosite-category-ai-!cn` rule-set
+          pinned in this flake's own lock — the services outside China, which are the ones
+          that refuse sanctioned regions. It is wide on purpose and catches developer tools
+          too, `comfy.org` and `coderabbit.ai` among them
+        '';
+      };
+
+      zones = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "openai.com" ];
+        description = ''
+          Domain suffixes refused while no profile is up: `openai.com` is the site and its
+          subdomains, `.openai.com` only the subdomains. Any entry here or in `ai` or
+          `geosite` turns the guard on: `skvpn down` then starts a sing-box on the same base
+          that sends everything direct and refuses these, by the name the client asked for
+          or the TLS name it sent. A process or site on the split list still leaves direct
+        '';
+      };
+
+      geosite = lib.mkOption {
+        type = lib.types.attrsOf lib.types.path;
+        default = { };
+        example = lib.literalExpression "{ geosite-custom = ./my-set.srs; }";
+        description = "Local binary rule-sets of domains refused while no profile is up, keyed by tag";
+      };
+    };
+
     split = {
       names = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -588,6 +665,11 @@ in
     }
     // lib.optionalAttrs (cfg.extraSettings != { }) {
       "sing-box/base.d/50-extra.json".text = builtins.toJSON cfg.extraSettings;
+    }
+    # Outside base.d, which every profile reads; its presence is how the CLI knows to
+    # start the guard on `down`
+    // lib.optionalAttrs guardEnabled {
+      "sing-box/guard.json".text = builtins.toJSON guardConfig;
     };
 
     # Written by root, contents read by the service user; the directory itself lists for
@@ -609,6 +691,30 @@ in
         ExecStart = "${lib.getExe cfg.singBoxPackage} -D /var/lib/sing-box-%i -C /etc/sing-box/base.d -c /etc/sing-box/profiles/%i.json run";
       };
     };
+
+    # Started by `skvpn down` and by boot restore when there is no profile to bring back;
+    # wanted by boot itself only when restore is off, since restore would race it
+    systemd.services.skvpn-guard = lib.mkIf guardEnabled (
+      lib.recursiveUpdate singBoxService {
+        description = "sing-box guard: no profile up, listed sites refused";
+        wantedBy = lib.optional (!cfg.restore.enable) "multi-user.target";
+
+        # A profile and the guard create the same TUN, so its presence means something is
+        # already up — a rebuild starting this beside a running profile skips it
+        unitConfig.ConditionPathExists = "!/sys/class/net/${cfg.tun.interfaceName}";
+
+        restartTriggers = [
+          (builtins.toJSON baseConfig)
+          (builtins.toJSON cfg.extraSettings)
+          (builtins.toJSON guardConfig)
+        ];
+
+        serviceConfig = {
+          StateDirectory = "skvpn-guard";
+          ExecStart = "${lib.getExe cfg.singBoxPackage} -D /var/lib/skvpn-guard -C /etc/sing-box/base.d -c /etc/sing-box/guard.json run";
+        };
+      }
+    );
 
     # /etc/systemd/system is a store symlink on NixOS, so `systemctl enable
     # sing-box@<name>` cannot persist a choice — the last one goes to /var/lib/skvpn/active

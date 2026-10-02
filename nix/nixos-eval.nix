@@ -52,6 +52,7 @@ let
       split.names = [ "firefox" ];
       extraSettings.log.level = "debug";
       trustedUsers = [ "alice" ];
+      guard.ai.enable = true;
     };
   };
 
@@ -106,6 +107,10 @@ in
     rule: lib.any (c: c.command or "" == "/run/current-system/sw/bin/skvpn") (rule.commands or [ ])
   ) enabled.security.sudo.extraRules;
   enabledAlias = enabled.environment.shellAliases.skvpn or null;
+
+  # The rendered unit text, which is where a wrong type in the guard's unit would show
+  enabledGuardUnit = enabled.systemd.units."skvpn-guard.service".text;
+  enabledGuardConfig = enabled.environment.etc."sing-box/guard.json".text;
 
   dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
   syncthingFollowPostStart = syncthingFollow.systemd.services."sing-box@".postStart;

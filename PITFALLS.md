@@ -18,6 +18,46 @@ Traps in sing-box and the tools around it that produce a plausible but wrong res
 
 ---
 
+## A later config file cannot change a scalar
+
+**Where it bites:** every file sing-box merges into one config — `base.d/00-base.json`, `extraSettings` as `50-extra.json`, `70-split.json`, a profile, and the guard's `guard.json` laid over the base
+
+**Reproduction:** two files that set one scalar differently, merged by sing-box 1.14.1
+
+```sh
+mkdir -p base.d
+echo '{"route":{"final":"proxy"}}' >base.d/00.json
+echo '{"route":{"final":"from-50"}}' >base.d/50.json
+sing-box merge out.json -C base.d && jq -c .route out.json
+```
+
+**Misleading result:** `{"final":"proxy"}`. The later file is accepted without a word, `sing-box check` passes, and a value written to override the base, like `extraSettings.log.level = "debug"`, simply has no effect
+
+**Mechanism:** sing-box reads the `-c` files and the `-C` directories into one list, sorts it by full path and merges in that order (`readConfig` in `cmd/sing-box/cmd_run.go`). The merge keeps a scalar from the first file that sets it, merges objects and appends arrays. Path order also means a profile in `profiles/` and the guard's `guard.json` always come after everything in `base.d/`, whatever the command line says
+
+**Safe route:** treat every file after the base as additive. Add a key the base lacks, or append a rule after the base's rules. The guard follows this: it redefines `proxy` as direct and appends a DNS catch-all to the bootstrap instead of changing `route.final` and `dns.final`
+
+---
+
+## `sing-box check` passes a detour that `run` refuses
+
+**Where it bites:** the guard in `nix/module.nix` and `non-nix/render-base.py`, which turns `proxy` into a direct outbound under a base whose DoT server dials through `proxy`; any config that points a `detour` at a direct outbound
+
+**Reproduction:** the base without its TUN, under a file whose `proxy` is `{"type": "direct", "tag": "proxy"}`, on sing-box 1.14.1
+
+```sh
+sing-box check -C base.d -c guard.json && echo check passed
+timeout 3 sing-box run -C base.d -c guard.json
+```
+
+**Misleading result:** `check passed`, and the unit dies at once with `start service: start dns/tls[remote]: detour to an empty direct outbound makes no sense`
+
+**Mechanism:** the refusal is made when the detour is resolved at start (`common/dialer/detour.go`), not when the config is parsed. A direct outbound counts as empty when its dialer options equal the defaults (`isEmpty` in `protocol/direct/outbound.go`), so any one option set on it lifts the refusal
+
+**Safe route:** prove a config by starting it, as the distro suite does with the guard; `check` proves only that it parses. The guard's `proxy` carries `domain_resolver: "bootstrap"`, the base's own default, so it is not empty and behaves the same
+
+---
+
 ## An unanswered AAAA query spends the whole delay budget
 
 **Where it bites:** the throwaway sing-box `skvpn ping` starts, whose config is built in `skvpn.py`, and the base DNS in `nix/module.nix` and `non-nix/render-base.py` that it matches

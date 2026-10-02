@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Render the non-Nix sing-box base config from install.sh options."""
+"""Render the non-Nix sing-box base config, or the guard laid over it, from install.sh
+options."""
 
 import argparse
 import ipaddress
@@ -31,6 +32,10 @@ PRESETS = {
         "geoip": "geoip-ir.srs",
     },
 }
+
+# The guard's AI preset: the AI services outside China, which are the ones that refuse
+# sanctioned regions
+GUARD_AI = ("geosite-ai", "geosite-category-ai-!cn.srs")
 
 
 # The TUN's own addresses. --no-ipv6 drops the v6 one: with auto_route on a host
@@ -141,6 +146,12 @@ parser.add_argument("--stack", choices=("system", "gvisor", "mixed"), default="s
 parser.add_argument("--no-ipv6", dest="ipv6", action="store_false")
 parser.add_argument("--rule-set-dir", default="/usr/share/sing-box/rule-set")
 parser.add_argument("--skip-path-check", action="store_true")
+# Sites refused while no profile is up; any of them turns the guard on
+parser.add_argument("--guard-ai", action="store_true")
+parser.add_argument("--guard-zone", action="append", default=[])
+parser.add_argument("--guard-geosite", action="append", type=tagged_path, default=[])
+# The same options render either file, so the two can never disagree about the base
+parser.add_argument("--render", choices=("base", "guard"), default="base")
 args = parser.parse_args()
 
 for kind, values in (("name", args.split_name), ("path", args.split_path)):
@@ -162,11 +173,17 @@ for name in args.preset:
 geosite.update(args.direct_geosite)
 geoip.update(args.direct_geoip)
 
+guard_geosite = {}
+if args.guard_ai:
+    guard_geosite[GUARD_AI[0]] = f"{args.rule_set_dir}/{GUARD_AI[1]}"
+guard_geosite.update(args.guard_geosite)
+guard_zones = list(dict.fromkeys(args.guard_zone))
+
 zones = list(dict.fromkeys(zones))
 if not args.skip_path_check:
     missing = [
         path
-        for path in [*geosite.values(), *geoip.values()]
+        for path in [*geosite.values(), *geoip.values(), *guard_geosite.values()]
         if not Path(path).is_file()
     ]
     if missing:
@@ -273,5 +290,39 @@ config = {
     },
 }
 
-json.dump(config, fp=sys.stdout, indent=2)
+# Laid over the base the way nix/module.nix lays it: sing-box sorts every file by
+# path, keeps the first scalar and appends arrays, so this cannot move `final` and its
+# rules land after the base's. `proxy` is direct here instead, and the names nobody
+# refuses go to the bootstrap, not to the DoT server that would now be dialled direct
+guard_matches = []
+if guard_zones:
+    guard_matches.append({"domain_suffix": guard_zones})
+if guard_geosite:
+    guard_matches.append({"rule_set": sorted(guard_geosite)})
+guard = None
+if guard_matches:
+    guard = {
+        # Not an empty direct outbound, which sing-box refuses as the DoT server's
+        # detour at start; the resolver is the base's default anyway (PITFALLS.md)
+        "outbounds": [
+            {"type": "direct", "tag": "proxy", "domain_resolver": "bootstrap"}
+        ],
+        "dns": {
+            "rules": [
+                {**match, "action": "predefined", "rcode": "REFUSED"}
+                for match in guard_matches
+            ]
+            + [{"action": "route", "server": "bootstrap"}],
+        },
+        "route": {
+            "rules": [{**match, "action": "reject"} for match in guard_matches],
+            "rule_set": [
+                {"tag": tag, "type": "local", "format": "binary", "path": path}
+                for tag, path in sorted(guard_geosite.items())
+            ],
+        },
+    }
+
+# `null` for the guard means there is none: install.sh removes its file and unit
+json.dump(config if args.render == "base" else guard, fp=sys.stdout, indent=2)
 print()

@@ -6,7 +6,7 @@ Arrangements that exist only because sing-box leaves no cleaner route. Each entr
 
 ## `auto_redirect` marks tailscaled's packets into the TUN
 
-**Where:** the `--tailscale` rules in `nft-bypass.sh`, run as `postStart` of the `sing-box@` unit in `nix/module.nix` when `tailscale.enable` is on, and as `ExecStartPost` of the drop-in that `install.sh --tailscale` writes
+**Where:** the `--tailscale` rules in `nft-bypass.sh`, run as `postStart` of both units in `nix/module.nix` when `tailscale.enable` is on, and as `ExecStartPost` of the drop-in and the guard unit that `install.sh --tailscale` writes
 
 **Symptom it prevents:** two tailnet hosts that both run skvpn reach each other through the exit node instead of directly. `tailscale ping` answers `via <exit node address>` with the exit's round trip, measured at 225 ms against 11 ms direct between two hosts in one city, and ssh over the tailnet stalls with `Timeout before authentication`
 
@@ -30,7 +30,7 @@ A `meta mark set 0x00002023` reached by a packet carrying a foreign mark -> keep
 
 ## Replies to inbound UDP leave through the TUN
 
-**Where:** the unconditional first rule of `nft-bypass.sh`, which the unit runs from `nix/module.nix` and from the drop-in `install.sh` writes; the `--syncthing` rules cover the half that is not a reply
+**Where:** the unconditional first rule of `nft-bypass.sh`, which both units run in `nix/module.nix` and `install.sh`; the `--syncthing` rules cover the half that is not a reply
 
 **Symptom it prevents:** a UDP service on the host stops answering peers on the internet while a profile is up. Syncthing logs `reading length: timeout: no recent network activity` for every QUIC connection with a peer outside the LAN, and falls back to a relay
 
