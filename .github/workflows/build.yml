@@ -41,7 +41,8 @@ jobs:
           test -f stage/usr/share/bash-completion/completions/skvpn
           test -f stage/usr/share/zsh/site-functions/_skvpn
           test -f stage/usr/share/skvpn/install-manifest
-          SKVPN=$PWD/stage/usr/bin/skvpn ./tests/run.sh
+          # The dev shell, for the real sing-box the suite checks the phone config with
+          SKVPN=$PWD/stage/usr/bin/skvpn nix develop -c ./tests/run.sh
           # A staged uninstall consumes the staged manifest and leaves the tree empty
           DESTDIR=$PWD/stage PREFIX=/usr ./install.sh --uninstall
           test ! -e stage/usr/bin/skvpn
