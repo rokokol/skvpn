@@ -11,6 +11,9 @@ _skvpn() {
   fi
 
   case "$cmd" in
+    down)
+      mapfile -t COMPREPLY < <(compgen -W "--no-guard" -- "$cur")
+      ;;
     up | rm)
       # Live names, not a cached list: the directory is world-listable on purpose
       mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null)" -- "$cur")

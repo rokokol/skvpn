@@ -50,7 +50,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn rm <name>…` | delete profiles; the running one is refused |
 | `skvpn ls [--names \| --servers]` | list profiles; `--names` prints bare names and needs no root; `--servers` adds each node's address, kept out of the table otherwise |
 | `skvpn up <name>` | sync if stale, stop the active profile, start this one, remember it for boot |
-| `skvpn down` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, start it |
+| `skvpn down [--no-guard]` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, start it, or with `--no-guard` leave everything off |
 | `skvpn restart` | start the active profile over on the base as it is now — how a changed split list gets onto the wire; with only the guard up, the guard |
 | `skvpn restore` | start the profile chosen for boot — the boot-time half of `up`; the guard when there is nothing to bring back |
 | `skvpn boot [<name> \| last]` | pin a profile for boot regardless of what is up; `last` goes back to following `up`; no argument shows the choice |

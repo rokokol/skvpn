@@ -42,6 +42,9 @@ _skvpn() {
   fi
 
   case "$words[2]" in
+    down)
+      compadd -- --no-guard
+      ;;
     up | rm)
       _skvpn_profiles
       ;;

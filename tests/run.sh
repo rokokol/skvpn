@@ -369,6 +369,20 @@ else
 fi
 
 # A start the unit's own condition skipped answers 0; the CLI must not call that a guard
+# Off entirely: the profile and the guard both stop, and nothing starts in their place
+world down-no-guard-stops-everything
+guard_on
+FAKE_ACTIVE=HY2
+export FAKE_ACTIVE
+sv down --no-guard >/dev/null || true
+if grep -q 'stop sing-box@HY2.service' "$SYSTEMCTL_LOG" &&
+  grep -q 'stop skvpn-guard.service' "$SYSTEMCTL_LOG" &&
+  ! grep -q '^start' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down --no-guard left something running or started the guard"
+fi
+
 world down-reports-a-guard-that-stayed-down
 guard_on
 export SYSTEMCTL_FAIL='is-active'

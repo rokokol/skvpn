@@ -946,11 +946,17 @@ def cmd_up(args):
     print(f"  →  {name}")
 
 
-def cmd_down(_args):
+def cmd_down(args):
+    """Stop the profile and forget the boot choice; the guard takes over, or with
+    --no-guard nothing does — off entirely, until the next up or boot."""
+    no_guard, args = take_flag(args, "--no-guard")
+    if args:
+        die("usage: skvpn down [--no-guard]")
     need_root()
     stop_active()
     ACTIVE.unlink(missing_ok=True)
-    start_guard()
+    if not no_guard:
+        start_guard()
 
 
 def cmd_restart(_args):
