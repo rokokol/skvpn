@@ -12,30 +12,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-PRESETS = {
-    "russia": {
-        "tag": "ru",
-        "zones": [".ru", ".su", ".xn--p1ai"],
-        "geosite": "geosite-category-ru.srs",
-        "geoip": "geoip-ru.srs",
-    },
-    "china": {
-        "tag": "cn",
-        "zones": [".cn", ".xn--fiqs8s", ".xn--fiqz9s"],
-        "geosite": "geosite-cn.srs",
-        "geoip": "geoip-cn.srs",
-    },
-    "iran": {
-        "tag": "ir",
-        "zones": [".ir", ".xn--mgba3a4f16a"],
-        "geosite": "geosite-category-ir.srs",
-        "geoip": "geoip-ir.srs",
-    },
-}
-
-# The guard's AI preset: the AI services outside China, which are the ones that refuse
-# sanctioned regions
-GUARD_AI = ("geosite-ai", "geosite-category-ai-!cn.srs")
+# Presets, the guard's AI rule-set and the tailnet: policy.json beside non-nix/, the
+# file the NixOS module reads too
+POLICY_FILE = Path(__file__).resolve().parent.parent / "policy.json"
+POLICY = json.loads(POLICY_FILE.read_text())
+PRESETS = {preset["name"]: preset for preset in POLICY["presets"]}
+GUARD_AI = (f"geosite-{POLICY['guard']['tag']}", POLICY["guard"]["geosite"])
 
 
 # The TUN's own addresses. --no-ipv6 drops the v6 one: with auto_route on a host
@@ -235,7 +217,7 @@ inbound = {
     "stack": args.stack,
 }
 if args.tailscale:
-    inbound["route_exclude_address"] = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+    inbound["route_exclude_address"] = POLICY["tailnet"]
 if args.docker:
     inbound["exclude_interface"] = ["docker0"]
 

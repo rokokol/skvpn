@@ -63,6 +63,13 @@
         name = "nft-bypass.sh";
         path = ./nft-bypass.sh;
       };
+      # Presets, the tailnet and where the rule-sets come from: the one place the module,
+      # the installer's renderer and the CLI all read
+      policy = lib.importJSON ./policy.json;
+      policyFile = builtins.path {
+        name = "skvpn-policy.json";
+        path = ./policy.json;
+      };
       checkSh = builtins.path {
         name = "check-sh.sh";
         path = ./check-sh.sh;
@@ -76,7 +83,9 @@
       # builtins.path keeps single files out of the input trees, so the module's closure
       # carries the enabled presets' rule-set files rather than both branches
       nixosModules.default = import ./nix/module.nix {
-        inherit self;
+        inherit self policy;
+        # Every file the presets and the guard name in policy.json, under the tags the
+        # module refers to them by
         ruleSetFiles =
           let
             one =
@@ -87,16 +96,14 @@
                 path = "${input}/${file}";
               };
           in
-          {
-            geosite-ru = one sing-geosite "geosite-category-ru.srs";
-            geoip-ru = one sing-geoip "geoip-ru.srs";
-            geosite-cn = one sing-geosite "geosite-cn.srs";
-            geoip-cn = one sing-geoip "geoip-cn.srs";
-            geosite-ir = one sing-geosite "geosite-category-ir.srs";
-            geoip-ir = one sing-geoip "geoip-ir.srs";
-            # The guard's AI preset: services outside China, the ones that refuse sanctioned
-            # regions
-            geosite-ai = one sing-geosite "geosite-category-ai-!cn.srs";
+          lib.listToAttrs (
+            lib.concatMap (preset: [
+              (lib.nameValuePair "geosite-${preset.tag}" (one sing-geosite preset.geosite))
+              (lib.nameValuePair "geoip-${preset.tag}" (one sing-geoip preset.geoip))
+            ]) policy.presets
+          )
+          // {
+            "geosite-${policy.guard.tag}" = one sing-geosite policy.guard.geosite;
           };
       };
 
@@ -134,6 +141,7 @@
                 cp ${versionFile} repo/VERSION
                 cp ${installer} repo/install.sh
                 cp ${bypassScript} repo/nft-bypass.sh
+                cp ${policyFile} repo/policy.json
                 cp -r ${nonNixDir} repo/non-nix
                 cp -r ${completionsDir} repo/completions
                 cp -r ${testsDir} repo/tests
@@ -158,6 +166,22 @@
               ${skvpn}/libexec/skvpn/nft-bypass --help | grep -F 'nft-bypass.sh apply' >/dev/null
               touch $out
             '';
+
+          # An input's URL has to be a literal, so it cannot read policy.json; this holds the
+          # two spellings of each rule-set source to each other, through the lock
+          policy-sources =
+            let
+              locked = (lib.importJSON ./flake.lock).nodes;
+              source = input: "${locked.${input}.original.owner}/${locked.${input}.original.repo}";
+              agree =
+                input: key:
+                lib.assertMsg (
+                  source input == policy.ruleSets.${key} && locked.${input}.original.ref == policy.ruleSets.branch
+                ) "flake input ${input} and policy.json ruleSets.${key} name different sources";
+            in
+            assert agree "sing-geosite" "geosite";
+            assert agree "sing-geoip" "geoip";
+            pkgs.runCommand "policy-sources" { } "touch $out";
 
           module-wiring =
             let
@@ -213,7 +237,7 @@
                 want '.base | fromjson | .route.rules[-1].rule_set == ["geosite-test", "geoip-test"]' "rule-sets never reached routing"
                 want '.base | fromjson | .route.rules[-2].domain_suffix == [".ru", ".su"]' "zones never reached routing"
                 want '.base | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "rule-set files are not store paths"
-                want '.base | fromjson | .inbounds[0].route_exclude_address == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]' "the tailnet is not excluded"
+                want '.base | fromjson | .inbounds[0].route_exclude_address == ${builtins.toJSON policy.tailnet}' "the tailnet is not excluded"
                 want '.base | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "the docker bridge is not excluded"
                 # The bypass rules live in the packaged script; the module only picks the flags
                 want '.postStart | test("/libexec/skvpn/nft-bypass apply( |$)")' "the unit does not run the packaged bypass script"
@@ -250,12 +274,17 @@
                 want '.bareAliases == {}' "an alias appeared without trustedUsers"
 
                 # The presets alone carry the zones and rule-sets from this flake's lock
-                want '.presetsBase | fromjson | .dns.rules[0].domain_suffix == [
-                  ".ru", ".su", ".xn--p1ai", ".cn", ".xn--fiqs8s", ".xn--fiqz9s", ".ir", ".xn--mgba3a4f16a"
-                ]' "the preset zones never reached DNS"
-                want '.presetsBase | fromjson | .route.rule_set | map(.tag) == [
-                  "geosite-cn", "geosite-ir", "geosite-ru", "geoip-cn", "geoip-ir", "geoip-ru"
-                ]' "the preset rule-sets never landed"
+                # The expected values come from policy.json, the presets' one source: their
+                # zones in the presets' order, and the tags geosite first, then geoip
+                want '.presetsBase | fromjson | .dns.rules[0].domain_suffix == ${
+                  builtins.toJSON (lib.concatMap (preset: preset.zones) policy.presets)
+                }' "the preset zones never reached DNS"
+                want '.presetsBase | fromjson | .route.rule_set | map(.tag) == ${
+                  builtins.toJSON (
+                    lib.sort lib.lessThan (map (preset: "geosite-${preset.tag}") policy.presets)
+                    ++ lib.sort lib.lessThan (map (preset: "geoip-${preset.tag}") policy.presets)
+                  )
+                }' "the preset rule-sets never landed"
                 want '.presetsBase | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "the preset rule-set files are not store paths"
 
                 want '.restoreOffServices | sort == ["sing-box@", "skvpn-sync"]' "restore.enable = false left the unit in place"
@@ -266,14 +295,17 @@
                 # Every source of sites refused, in DNS and in routing
                 want '.guard | fromjson | .dns.rules[:2] == [
                   {"domain_suffix": [".example.com"], "action": "predefined", "rcode": "REFUSED"},
-                  {"rule_set": ["geosite-ai", "geosite-test"], "action": "predefined", "rcode": "REFUSED"}
+                  {"rule_set": ["geosite-${policy.guard.tag}", "geosite-test"], "action": "predefined", "rcode": "REFUSED"}
                 ]' "a guarded site still resolves"
                 want '.guard | fromjson | .route.rules == [
                   {"domain_suffix": [".example.com"], "action": "reject"},
-                  {"rule_set": ["geosite-ai", "geosite-test"], "action": "reject"}
+                  {"rule_set": ["geosite-${policy.guard.tag}", "geosite-test"], "action": "reject"}
                 ]' "a guarded site still connects"
                 want '.guard | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "a guard rule-set is not a store path"
-                want '.guard | fromjson | .route.rule_set[0].path | test("geosite-category-ai")' "the AI preset is not the pinned AI rule-set"
+                # The store name of the pinned file: its upstream name with `!` spelled `not-`
+                want '.guard | fromjson | .route.rule_set[0].path | endswith("-${
+                  builtins.replaceStrings [ "!" ] [ "not-" ] policy.guard.geosite
+                }")' "the AI preset is not the pinned AI rule-set"
                 # The base keeps `final`, so the guard must make `proxy` itself direct and send
                 # the remaining DNS to the bootstrap instead of the DoT server through it
                 want '.guard | fromjson | .outbounds == [{"type": "direct", "tag": "proxy", "domain_resolver": "bootstrap"}]' "the guard's proxy is not a non-empty direct outbound"

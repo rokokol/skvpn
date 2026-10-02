@@ -2,7 +2,11 @@
 # template unit, the boot restore and subscription sync units, the sing-box user and the
 # profiles directory, plus a generic base config — TUN, DNS, routing skeleton. What it ships
 # none of is the routing policy: direct zones and rule-sets come from the consumer's options
-{ self, ruleSetFiles }:
+{
+  self,
+  policy,
+  ruleSetFiles,
+}:
 {
   config,
   lib,
@@ -13,58 +17,26 @@
 let
   cfg = config.services.skvpn;
 
-  # Countries whose domestic destinations commonly have to leave around the tunnel; the
-  # rule-set data behind the tags is pinned in this flake's own lock. The punycode zones
-  # are the countries' IDN ccTLDs: .рф, .中国, .中國, .ایران
-  presets = {
-    russia = {
-      label = "Russian";
-      zones = [
-        ".ru"
-        ".su"
-        ".xn--p1ai"
-      ];
-      geosite = "geosite-ru";
-      geoip = "geoip-ru";
-    };
-    china = {
-      label = "Chinese";
-      zones = [
-        ".cn"
-        ".xn--fiqs8s"
-        ".xn--fiqz9s"
-      ];
-      geosite = "geosite-cn";
-      geoip = "geoip-cn";
-    };
-    iran = {
-      label = "Iranian";
-      zones = [
-        ".ir"
-        ".xn--mgba3a4f16a"
-      ];
-      geosite = "geosite-ir";
-      geoip = "geoip-ir";
-    };
-  };
-
-  # A fixed order, so two enabled presets render the same base on every eval
-  enabledPresets = lib.filter (name: cfg.direct.${name}.enable) [
-    "russia"
-    "china"
-    "iran"
-  ];
+  # Countries whose domestic destinations commonly have to leave around the tunnel, from
+  # policy.json, which the installer's renderer reads too. A list there, so two
+  # enabled presets render the same base on every eval. The rule-set data behind the tags
+  # is pinned in this flake's own lock
+  presets = map (
+    preset:
+    preset
+    // {
+      geosite = "geosite-${preset.tag}";
+      geoip = "geoip-${preset.tag}";
+    }
+  ) policy.presets;
+  enabledPresets = lib.filter (preset: cfg.direct.${preset.name}.enable) presets;
 
   # The consumer's knobs plus whatever presets are on
-  directZones = lib.unique (
-    cfg.direct.zones ++ lib.concatMap (name: presets.${name}.zones) enabledPresets
-  );
+  directZones = lib.unique (cfg.direct.zones ++ lib.concatMap (preset: preset.zones) enabledPresets);
   presetFiles =
     key:
     lib.listToAttrs (
-      map (
-        name: lib.nameValuePair presets.${name}.${key} ruleSetFiles.${presets.${name}.${key}}
-      ) enabledPresets
+      map (preset: lib.nameValuePair preset.${key} ruleSetFiles.${preset.${key}}) enabledPresets
     );
   directGeosite = presetFiles "geosite" // cfg.direct.geosite;
   directGeoip = presetFiles "geoip" // cfg.direct.geoip;
@@ -76,12 +48,7 @@ let
       map (pool: pool.base) (dockerSettings.default-address-pools or [ ])
     else
       [ ];
-  routeExcludeAddress =
-    lib.optionals cfg.tailscale.enable [
-      "100.64.0.0/10"
-      "fd7a:115c:a1e0::/48"
-    ]
-    ++ dockerAddressPools;
+  routeExcludeAddress = lib.optionals cfg.tailscale.enable policy.tailnet ++ dockerAddressPools;
 
   # Tags double as attribute names, so a rule-set is declared exactly once; geosite first,
   # geoip second — a stable order, not an alphabetical accident
@@ -144,7 +111,10 @@ let
 
   # The guard is what runs while no profile is up, and exists only with something to refuse
   guardGeosite =
-    lib.optionalAttrs cfg.guard.ai.enable { inherit (ruleSetFiles) geosite-ai; } // cfg.guard.geosite;
+    lib.optionalAttrs cfg.guard.ai.enable {
+      "geosite-${policy.guard.tag}" = ruleSetFiles."geosite-${policy.guard.tag}";
+    }
+    // cfg.guard.geosite;
   guardMatches =
     lib.optional (cfg.guard.zones != [ ]) { domain_suffix = cfg.guard.zones; }
     ++ lib.optional (guardGeosite != { }) { rule_set = lib.attrNames guardGeosite; };
@@ -470,17 +440,22 @@ in
     };
 
     direct =
-      lib.mapAttrs (_: preset: {
-        enable = lib.mkEnableOption "" // {
-          description = ''
-            Route ${preset.label} destinations around the tunnel: the
-            ${lib.concatStringsSep ", " (map (z: "`${z}`") preset.zones)} zone suffixes plus
-            the `${preset.geosite}` and `${preset.geoip}` rule-sets pinned in this flake's
-            own lock — for exits that refuse or geo-mangle that traffic. The suffixes carry
-            most of it: a geosite set always misses plenty
-          '';
-        };
-      }) presets
+      lib.listToAttrs (
+        map (
+          preset:
+          lib.nameValuePair preset.name {
+            enable = lib.mkEnableOption "" // {
+              description = ''
+                Route ${preset.label} destinations around the tunnel: the
+                ${lib.concatStringsSep ", " (map (z: "`${z}`") preset.zones)} zone suffixes plus
+                the `${preset.geosite}` and `${preset.geoip}` rule-sets pinned in this flake's
+                own lock — for exits that refuse or geo-mangle that traffic. The suffixes carry
+                most of it: a geosite set always misses plenty
+              '';
+            };
+          }
+        ) presets
+      )
       // {
         zones = lib.mkOption {
           type = lib.types.listOf lib.types.str;
@@ -519,8 +494,8 @@ in
     guard = {
       ai.enable = lib.mkEnableOption "" // {
         description = ''
-          Refuse AI services while no profile is up: the `geosite-category-ai-!cn` rule-set
-          pinned in this flake's own lock — the services outside China, which are the ones
+          Refuse AI services while no profile is up: the
+          `${lib.removeSuffix ".srs" policy.guard.geosite}` rule-set pinned in this flake's own lock — the services outside China, which are the ones
           that refuse sanctioned regions. It is wide on purpose and catches developer tools
           too, `comfy.org` and `coderabbit.ai` among them
         '';

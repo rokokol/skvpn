@@ -65,7 +65,7 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
   --syncthing          keep UDP from Syncthing's port 22000 out of the TUN, so its QUIC
                        keeps the source port peers know
   --guard-ai           while no profile is up, run a guard that refuses AI services:
-                       the geosite-category-ai-!cn rule-set
+                       the AI rule-set policy.json names
   --guard-zone SUFFIX  a domain suffix the guard refuses; repeatable
   --guard-geosite TAG=PATH
                        a local domain rule-set the guard refuses; repeatable

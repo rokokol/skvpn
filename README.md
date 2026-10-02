@@ -133,7 +133,7 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `direct.zones` | `[ ]` | domain suffixes resolved by the local bootstrap and routed past the tunnel |
 | `direct.geosite` / `direct.geoip` | `{ }` | local binary rule-sets routed direct, keyed by tag; local on purpose — a remote set would arrive through the tunnel it is meant to steer |
 | `split.names` / `split.paths` / `split.ips` | `[ ]` | split tunnelling in the bypass sense: process names, absolute executable paths and destination CIDRs that leave around the tunnel; names and paths take `*`/`?` wildcards, and the process kinds resolve locally too. `skvpn split add` keeps an imperative list beside these |
-| `guard.ai.enable` | `false` | while no profile is up, refuse AI services: the `geosite-category-ai-!cn` rule-set pinned in this flake's lock. It is wide on purpose and catches developer tools too |
+| `guard.ai.enable` | `false` | while no profile is up, refuse AI services: the AI rule-set [policy.json](policy.json) names, pinned in this flake's lock. It is wide on purpose and catches developer tools too |
 | `guard.zones` / `guard.geosite` | `[ ]` / `{ }` | more domain suffixes and local rule-sets for the guard to refuse; any of the three turns the guard on |
 | `tailscale.enable` | follows `services.tailscale.enable` | keep the tailnet ranges and tailscaled's own peer traffic out of the TUN |
 | `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: follow the configured default bridge name, bypass dynamic `br-*` interfaces in nftables, and exclude `virtualisation.docker.daemon.settings.default-address-pools` from TUN routes |

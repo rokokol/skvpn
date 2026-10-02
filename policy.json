@@ -1,0 +1,38 @@
+{
+  "tailnet": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
+  "ruleSets": {
+    "geosite": "SagerNet/sing-geosite",
+    "geoip": "SagerNet/sing-geoip",
+    "branch": "rule-set"
+  },
+  "presets": [
+    {
+      "name": "russia",
+      "label": "Russian",
+      "tag": "ru",
+      "zones": [".ru", ".su", ".xn--p1ai"],
+      "geosite": "geosite-category-ru.srs",
+      "geoip": "geoip-ru.srs"
+    },
+    {
+      "name": "china",
+      "label": "Chinese",
+      "tag": "cn",
+      "zones": [".cn", ".xn--fiqs8s", ".xn--fiqz9s"],
+      "geosite": "geosite-cn.srs",
+      "geoip": "geoip-cn.srs"
+    },
+    {
+      "name": "iran",
+      "label": "Iranian",
+      "tag": "ir",
+      "zones": [".ir", ".xn--mgba3a4f16a"],
+      "geosite": "geosite-category-ir.srs",
+      "geoip": "geoip-ir.srs"
+    }
+  ],
+  "guard": {
+    "tag": "ai",
+    "geosite": "geosite-category-ai-!cn.srs"
+  }
+}

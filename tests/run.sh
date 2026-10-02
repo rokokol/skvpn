@@ -1297,17 +1297,17 @@ world installer-renders-the-guard
   --guard-geosite geosite-test=/rules/test.srs --tun-interface friend-tun --tailscale >/dev/null
 guard="$(guard_stage sing-box/guard.json)"
 unit="$(guard_stage systemd/system/skvpn-guard.service)"
-if jq -e '.dns.rules == [
+if jq -e --slurpfile p "$REPO/policy.json" '.dns.rules == [
     {"domain_suffix": [".example.com"], "action": "predefined", "rcode": "REFUSED"},
-    {"rule_set": ["geosite-ai", "geosite-test"], "action": "predefined", "rcode": "REFUSED"},
+    {"rule_set": ["geosite-\($p[0].guard.tag)", "geosite-test"], "action": "predefined", "rcode": "REFUSED"},
     {"action": "route", "server": "bootstrap"}
   ]' "$guard" >/dev/null &&
-  jq -e '.route.rules == [
+  jq -e --slurpfile p "$REPO/policy.json" '.route.rules == [
     {"domain_suffix": [".example.com"], "action": "reject"},
-    {"rule_set": ["geosite-ai", "geosite-test"], "action": "reject"}
+    {"rule_set": ["geosite-\($p[0].guard.tag)", "geosite-test"], "action": "reject"}
   ]' "$guard" >/dev/null &&
   jq -e '.outbounds == [{"type": "direct", "tag": "proxy", "domain_resolver": "bootstrap"}]' "$guard" >/dev/null &&
-  jq -e '.route.rule_set[0].path == "/usr/share/sing-box/rule-set/geosite-category-ai-!cn.srs"' "$guard" >/dev/null &&
+  jq -e --slurpfile p "$REPO/policy.json" '.route.rule_set[0].path == "/usr/share/sing-box/rule-set/\($p[0].guard.geosite)"' "$guard" >/dev/null &&
   grep -qx 'ConditionPathExists=!/sys/class/net/friend-tun' "$unit" &&
   grep -qx 'ExecStart=/usr/bin/sing-box -D /var/lib/skvpn-guard -C /etc/sing-box/base.d -c /etc/sing-box/guard.json run' "$unit" &&
   grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale' "$unit" &&

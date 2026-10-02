@@ -23,6 +23,8 @@ nix fmt -- --ci
 ```
 skvpn.py             the CLI
 VERSION              the one place the version lives — package.nix, --version and CI read it
+policy.json          the one place the presets, the guard's AI rule-set, the tailnet and the
+                     rule-sets' upstream live — module.nix and render-base.py read it
 completions/         skvpn.bash, _skvpn and the install.sh completions, spelled by hand
 nix/                 package.nix, module.nix, module-test.nix, nixos-eval.nix
 check-sh.sh          vendored from bash-best-practices, holds install.sh's help and
@@ -46,6 +48,7 @@ DEVIATIONS.md        where this repo departs on purpose from its family's route
 - **the subscription tests run on `file://` URLs** — `urlopen` speaks the scheme, which is what lets sync's prune/spare logic run offline. The real fetch sends a custom `User-Agent`: the stock `Python-urllib` one gets 403 from Cloudflare bot rules
 - **every file after the base can only add** — sing-box sorts all config files by path and keeps the first scalar, so `extraSettings`, a profile and the guard can append rules and add keys but never change `final` or `log.level` (`PITFALLS.md`). The guard is built around that: it redefines `proxy` as direct and appends a DNS catch-all
 - **the guard is the off state, and `guard.json` is its switch** — the module and the renderer write it only when there is a site to refuse, and the CLI decides by the file alone, so `tests/run.sh` turns it on by writing one. The unit skips its start while the TUN exists, and a skipped start answers 0, which is why `start_guard` asks `is-active` afterwards
+- **a preset, a tailnet range or a rule-set source goes into `policy.json` and nowhere else** — tests derive their expected values from it too. The one copy that cannot read it is the URL of a flake input, which has to be a literal; the `policy-sources` check holds the two together through `flake.lock`.
 - **the nft rules live in `nft-bypass.sh` only** — the module and `install.sh` pick its flags, `tests/docker-routing.sh` and the distro suite run the script itself; a rule copied anywhere else is a second source of truth
 - **`base.d/70-split.json` is CLI-owned state inside a directory the renderers own.** `skvpn split` writes it, neither NixOS nor `install.sh` knows it exists, and `--uninstall` leaves it like a profile. Every split rule is its own rule object routed `direct` because `-C` can only append — that is why the feature is bypass-only. sing-box has no hot reload, and `split add`/`rm` deliberately do **not** restart anything: they print the `skvpn restart` reminder, because dropping the tunnel is the user's call
 - **`skvpn boot` reserves the word `last`**, and `skvpn ping` reserves `set`; a profile with either name is reachable only through the forms that take no name
