@@ -532,7 +532,7 @@ python3 "$REPO/non-nix/render-base.py" --skip-path-check >"$SKVPN_ROOT/etc/sing-
 bare=$(sv export --sfa 2>/dev/null) || true
 has_tailnet() {
   jq -e --slurpfile p "$REPO/policy.json" '
-    (.endpoints // []) == [{"type": "tailscale", "tag": "tailnet", "state_directory": "tailscale"}] and
+    (.endpoints // []) == [{"type": "tailscale", "tag": "tailnet"}] and
     (.route.rules | any(.outbound == "tailnet" and .ip_cidr == $p[0].tailnet)) and
     (.dns.rules | any(.server == "tailnet"))' >/dev/null
 }

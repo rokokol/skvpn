@@ -1243,9 +1243,9 @@ def sfa_config(names, active, tailscale):
         # the choice across restarts
         config["experimental"]["clash_api"] = {"default_mode": "Rule"}
     if tailscale:
-        config["endpoints"] = [
-            {"type": "tailscale", "tag": "tailnet", "state_directory": "tailscale"}
-        ]
+        # sing-box keeps the node's key in its own default state directory, which a
+        # re-imported config reuses: the phone stays the same tailnet node
+        config["endpoints"] = [{"type": "tailscale", "tag": "tailnet"}]
     return config
 
 
