@@ -2,7 +2,7 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
-## Unreleased
+## [3.0.0] - 2026-10-03
 
 ### Added
 
@@ -13,9 +13,13 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - `skvpn export --sfa` prints a whole config for sing-box for Android: every profile in one group the app switches on the fly, the host's direct policy with its rule-sets fetched by URL, the LAN kept outside the tunnel, the tailnet through the app's own Tailscale endpoint when the host runs Tailscale (`--no-tailscale` leaves it out), and the host's guard as a Direct mode that keeps refusing the guarded sites
 - `skvpn down --no-guard` leaves everything off, the guard included
 
+### Changed
+
+- **the installer needs `nftables`**: every install now runs the bypass rules below, so `install.sh` refuses to go on without `nft`, and its preflight prints how to get it on each distribution. Re-running an older install on a host without nftables stops at the preflight
+
 ### Fixed
 
-- a UDP service on the host answers peers on the internet while a profile is up: sing-box sent the answers into the TUN and out from a new port, which broke Syncthing's QUIC and inbound Tailscale. Every install now carries the rule, so the installer needs `nftables` and its preflight says how to get it ([WORKAROUNDS.md](WORKAROUNDS.md))
+- a UDP service on the host answers peers on the internet while a profile is up: sing-box sent the answers into the TUN and out from a new port, which broke Syncthing's QUIC and inbound Tailscale ([WORKAROUNDS.md](WORKAROUNDS.md))
 - with `tailscale.enable` or `--tailscale`, tailscaled's own peer traffic stays off the tunnel, and two tailnet hosts behind one network reach each other directly instead of through the exit node ([WORKAROUNDS.md](WORKAROUNDS.md))
 - the installer's `--docker` now bypasses dynamically named `br-*` bridges too, as the NixOS module already did
 - the `extraSettings` description said a later file replaces a scalar; sing-box keeps the first one, so a scalar the base sets cannot be changed there ([PITFALLS.md](PITFALLS.md))
