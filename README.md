@@ -35,6 +35,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 
 - [Commands](#commands)
 - [How it is put together](#how-it-is-put-together)
+  - [A phone](#a-phone) — the same profiles and policy on Android, in a few steps
 - [NixOS module](#nixos-module)
 - [Completions](#completions)
 - [Install](#install)
@@ -99,6 +100,17 @@ Bypass only: a listed process name, executable path, destination address or site
 With nothing up, every site is reached from your own address, and some services hold that against the account. The guard is what "off" means once you give it something to refuse: `skvpn down` starts a sing-box on the same base that sends everything direct but refuses the listed sites, both the name lookup and the connection, matched by the name asked for or the TLS name sent. Boot starts it when there is no profile to bring back, and `skvpn up` stops it. The AI preset refuses the AI services that turn sanctioned regions away, from a rule-set pinned like the country presets; your own zones and rule-sets add to it. A process or site on the split list still leaves direct, the same as with a profile up
 
 ### A phone
+
+1. Install sing-box for Android (SFA) from the [Play Store](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa), [F-Droid](https://f-droid.org/packages/io.nekohasekai.sfa/) or the [releases](https://github.com/SagerNet/sing-box/releases)
+2. On the host, `sudo skvpn export --sfa > phone.json`
+3. Move `phone.json` to the phone over a channel you trust with passwords, and delete it from the host and the channel afterwards
+4. In SFA, Profiles → + → Local → Import, and pick the file
+5. Turn off any other VPN app on the phone, Tailscale included: Android runs one at a time, and this config carries the tailnet itself
+6. Start the profile from the Dashboard
+7. With Tailscale on the host, open Tools → Endpoints → tailnet once and follow the login link; a later re-import keeps the phone the same tailnet node
+8. To be "off" while keeping the guarded sites refused, switch the mode card on the Dashboard from Rule to Direct; stopping SFA turns everything off
+
+To update the phone after the subscription or the policy changes, run step 2 again and import the new file over the old profile
 
 `sudo skvpn export --sfa` writes one config for [sing-box for Android](https://sing-box.sagernet.org/clients/android/) that carries the host's policy to the phone. Every profile, or the named ones, sits in one group the app switches between on the fly. Sites the host sends direct go direct here too, with the rule-sets fetched through the node by URL; process entries of the split list stay behind, since they name the host's programs. The LAN stays outside the tunnel, so devices there still reach the phone. When the host runs Tailscale, the phone joins the tailnet from inside the same app, since Android lets only one VPN run at a time; the app shows the login link under Tools → Endpoints. When the host has a guard, the app gets a Direct mode beside the usual Rule one: switching to it sends everything direct but keeps refusing the guarded sites, which is the phone's way of being off. The file carries the nodes' credentials, so move it the way you would move a password
 
