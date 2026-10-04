@@ -90,7 +90,7 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
   --tun-address CIDR   TUN address; repeatable, replaces both defaults
   --stack NAME         TUN stack: system, gvisor or mixed (default: system)
   --no-ipv6            give the TUN no IPv6 address, for a host without IPv6
-  --dns-server ADDRESS DNS-over-TLS server through the proxy (default: 8.8.8.8)
+  --dns-server ADDRESS DNS-over-TLS server through the proxy (default: 1.1.1.1)
   --extra-settings FILE
                        append a sing-box base.d JSON file
   --no-restore         do not restore the active profile on boot

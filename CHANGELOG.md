@@ -2,6 +2,12 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
+## [Unreleased]
+
+### Changed
+
+- the DNS-over-TLS server behind the tunnel defaults to Cloudflare's `1.1.1.1` instead of Google's `8.8.8.8`, on NixOS (`dns.remoteServer`) and for the installer (`--dns-server`). Google forwards a part of the client address to the sites it resolves, and Cloudflare does not. A host that sets the server keeps it
+
 ## [3.1.0] - 2026-10-04
 
 ### Added

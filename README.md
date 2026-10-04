@@ -163,7 +163,7 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `restore.enable` | `true` | bring the last active profile back on boot |
 | `sync.interval` | `"daily"` | `OnCalendar` for the subscription refresh |
 | `fixDiscordVoice` | `true` | loosen the firewall's reverse-path filter (as a default an explicit host value beats): replies to tunnelled UDP arrive on the TUN while the route points at the LAN, and a strict filter drops them — Discord voice is how that shows up |
-| `tun.interfaceName`, `tun.address`, `dns.remoteServer` | `skvpn-tun`, `172.19.0.1/30` + ULA, `8.8.8.8` | the base config's fixed points |
+| `tun.interfaceName`, `tun.address`, `dns.remoteServer` | `skvpn-tun`, `172.19.0.1/30` + ULA, `1.1.1.1` | the base config's fixed points |
 | `tun.ipv6` | `true` | give the TUN a v6 address. Turn it off on a host with no IPv6 upstream: `auto_route` otherwise installs a v6 default route to nowhere, and whatever reaches for v6 first waits on it — the DNS strategy does not cover this, because an application carrying its own addresses never asks |
 | `tun.stack` | `system` | the TCP/IP stack behind the TUN: `system` handles TCP and UDP with the host stack, `mixed` uses the host for TCP and gVisor for UDP, and `gvisor` handles both in userspace |
 | `package`, `singBoxPackage` | this flake's CLI, `pkgs.sing-box` | what to install and what the unit runs |

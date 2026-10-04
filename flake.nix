@@ -282,6 +282,7 @@
                 # A bare enable must invent no policy and write no extra file
                 want '.bareBase | fromjson | .dns.rules == []' "a DNS rule appeared out of thin air"
                 want '.bareBase | fromjson | .route.rules | length == 3' "a route rule appeared out of thin air"
+                want '.bareBase | fromjson | .dns.servers | map(select(.tag == "remote"))[0].server == "1.1.1.1"' "the default resolver is not Cloudflare"
                 want '.bareBase | fromjson | .inbounds[0] | has("route_exclude_address") | not' "a tailnet exclusion appeared without Tailscale"
                 want '.bareBase | fromjson | .inbounds[0] | has("exclude_interface") | not' "a docker exclusion appeared without docker"
                 want '.bareBase | fromjson | .inbounds[0].stack == "system"' "the default TUN stack drifted"

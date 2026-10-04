@@ -413,7 +413,7 @@ in
 
     dns.remoteServer = lib.mkOption {
       type = lib.types.str;
-      default = "8.8.8.8";
+      default = "1.1.1.1";
       description = "DNS-over-TLS server queried through the tunnel for everything not routed direct";
     };
 

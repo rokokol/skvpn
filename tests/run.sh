@@ -1129,7 +1129,7 @@ printf '{"log":{"level":"debug"}}\n' >"$SKVPN_ROOT/extra.json"
   --direct-geoip custom-ip=/rules/ip.srs \
   --tun-interface friend-tun \
   --tun-address 10.42.0.1/30 \
-  --dns-server 1.1.1.1 \
+  --dns-server 9.9.9.9 \
   --stack gvisor \
   --split firefox \
   --split path /usr/bin/steam \
@@ -1147,7 +1147,7 @@ if jq -e '
 	.inbounds[0].stack == "gvisor" and
 	(.inbounds[0].route_exclude_address | length == 2)
 ' "$base" >/dev/null &&
-  jq -e '.dns.servers[1].server == "1.1.1.1"' "$base" >/dev/null &&
+  jq -e '.dns.servers[1].server == "9.9.9.9"' "$base" >/dev/null &&
   jq -e '.route.rules | any(.domain_suffix? | index(".ru"))' "$base" >/dev/null &&
   jq -e '.route.rules | any(.domain_suffix? | index("example.com"))' "$base" >/dev/null &&
   jq -e '.dns.rules | any(.domain_suffix? | index("example.com"))' "$base" >/dev/null &&
@@ -1196,6 +1196,16 @@ if jq -e '.inbounds[0].address == ["172.19.0.1/30"] and .inbounds[0].stack == "s
   ok
 else
   fail "--no-ipv6 left the TUN a v6 address, the default stack drifted, or a rule came from nowhere"
+fi
+
+# The same default resolver as the NixOS option: one that sends no client subnet
+world installer-defaults-to-cloudflare-dns
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
+if jq -e '.dns.servers | map(select(.tag == "remote"))[0].server == "1.1.1.1"' \
+  "$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json" >/dev/null; then
+  ok
+else
+  fail "a bare install does not resolve through Cloudflare"
 fi
 
 world installer-rejects-bad-split-values
