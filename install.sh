@@ -32,6 +32,7 @@ SYSTEMD=1
 CONFIG_ARGS=()
 # Flags for nft-bypass.sh, which the units run once sing-box has made its table
 BYPASS_FLAGS=()
+VIA_TUNNEL=0
 TUN_INTERFACE=skvpn-tun
 RESTORE=1
 SYNC_INTERVAL=daily
@@ -61,6 +62,10 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
                        absent, the fix is removed and the previous value restored
   --tailscale          keep Tailscale address ranges and tailscaled's own traffic out of
                        the TUN
+  --tailscale-via-tunnel ADDRESS
+                       except tailscaled's packets to ADDRESS, the public address of an
+                       exit node that is a tailnet peer too: they go through the tunnel,
+                       so the peer is reached directly; repeatable, needs --tailscale
   --docker             keep the docker0 bridge and dynamic br-* bridges out of the TUN
   --syncthing          keep UDP from Syncthing's port 22000 out of the TUN, so its QUIC
                        keeps the source port peers know
@@ -151,6 +156,12 @@ while [[ $# -gt 0 ]]; do
       BYPASS_FLAGS+=("$1")
       shift
       ;;
+    --tailscale-via-tunnel)
+      (($# >= 2)) || die "$1 needs an address"
+      BYPASS_FLAGS+=("$1" "$2")
+      VIA_TUNNEL=1
+      shift 2
+      ;;
     --guard-ai)
       CONFIG_ARGS+=("$1")
       shift
@@ -231,6 +242,10 @@ done
 [[ "$SYSCONFDIR" == /* ]] || die "SYSCONFDIR must be absolute: $SYSCONFDIR"
 [[ "$LOCALSTATEDIR" == /* ]] || die "LOCALSTATEDIR must be absolute: $LOCALSTATEDIR"
 [[ "$SYSTEMD_UNITDIR" == /* ]] || die "SYSTEMD_UNITDIR must be absolute: $SYSTEMD_UNITDIR"
+# The bypass script refuses the pair too, but only once the unit starts
+if ((VIA_TUNNEL)) && [[ " ${CONFIG_ARGS[*]-} " != *" --tailscale "* ]]; then
+  die "--tailscale-via-tunnel needs --tailscale"
+fi
 if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
   die "--uninstall already removes the Discord voice fix"
 fi

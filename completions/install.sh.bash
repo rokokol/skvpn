@@ -13,7 +13,7 @@ _install_sh_skvpn() {
 
   local flags=(
     -h --help -v --version --prefix --destdir --uninstall --no-systemd
-    --fix-discord-voice --tailscale --docker --syncthing
+    --fix-discord-voice --tailscale --tailscale-via-tunnel --docker --syncthing
     --guard-ai --guard-zone --guard-geosite
     --direct-russia --direct-china --direct-iran --direct-bittorrent
     --direct-zone --direct-geosite --direct-geoip --split
@@ -43,7 +43,7 @@ _install_sh_skvpn() {
       done < <(compgen -W "name path ip domain" -- "$cur")
       return
       ;;
-    --direct-zone | --direct-geosite | --direct-geoip | --guard-zone | --guard-geosite | --tun-interface | --tun-address | --stack | --dns-server | --sync-interval)
+    --direct-zone | --direct-geosite | --direct-geoip | --guard-zone | --guard-geosite | --tun-interface | --tun-address | --stack | --dns-server | --sync-interval | --tailscale-via-tunnel)
       return
       ;;
   esac

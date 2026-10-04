@@ -81,7 +81,13 @@ let
   tuned = eval {
     services.skvpn = {
       enable = true;
-      tailscale.enable = true;
+      tailscale = {
+        enable = true;
+        viaTunnel = [
+          "192.0.2.10"
+          "2001:db8::10"
+        ];
+      };
       docker.enable = true;
       syncthing.enable = true;
       tun = {
@@ -182,6 +188,16 @@ let
     };
   };
 
+  viaTunnelAlone = eval {
+    services.skvpn = {
+      enable = true;
+      tailscale = {
+        enable = false;
+        viaTunnel = [ "192.0.2.10" ];
+      };
+    };
+  };
+
   off = eval { };
 
   broken = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
@@ -225,6 +241,9 @@ in
   splitBase = splitOn.environment.etc."sing-box/base.d/00-base.json".text;
   splitBroken = broken splitOn;
   splitSingBoxBroken = broken splitSingBox;
+
+  tunedBroken = broken tuned;
+  viaTunnelAloneBroken = broken viaTunnelAlone;
 
   offEtc = lib.attrNames off.environment.etc;
   offPackages = off.environment.systemPackages;

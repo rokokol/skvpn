@@ -81,3 +81,7 @@ jobs:
         run: |
           nix develop .#ci-docker-routing --no-write-lock-file -c bash -c \
             'sudo env SING_BOX="$(command -v sing-box)" NFT="$(command -v nft)" bash tests/docker-routing.sh'
+      - name: tailscaled reaches the exit through the TUN and everyone else past it
+        run: |
+          nix develop .#ci-docker-routing --no-write-lock-file -c bash -c \
+            'SING_BOX="$(command -v sing-box)" NFT="$(command -v nft)" bash tests/tailscale-routing.sh'

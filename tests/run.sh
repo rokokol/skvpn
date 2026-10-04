@@ -1513,6 +1513,19 @@ else
   fail "the bypass script is missing, unrecorded, or the unit runs it with the wrong flags"
 fi
 
+# An exit address only narrows the Tailscale bypass, so the installer refuses it alone
+world installer-passes-exit-addresses-to-the-bypass
+dropin="$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf"
+if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tailscale \
+  --tailscale-via-tunnel 192.0.2.10 --tailscale-via-tunnel 2001:db8::10 >/dev/null 2>&1 &&
+  grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale --tailscale-via-tunnel 192.0.2.10 --tailscale-via-tunnel 2001:db8::10' "$dropin" &&
+  ! "$REPO/install.sh" --destdir "$SKVPN_ROOT/alone-stage" --tailscale-via-tunnel 192.0.2.10 >/dev/null 2>&1 &&
+  [[ ! -e "$SKVPN_ROOT/alone-stage" ]]; then
+  ok
+else
+  fail "an exit address did not reach the bypass, or was taken without --tailscale"
+fi
+
 guard_stage() { printf '%s/stage/etc/%s' "$SKVPN_ROOT" "$1"; }
 
 # The same guard nix/module.nix renders: every source refused in DNS and in routing, `proxy`

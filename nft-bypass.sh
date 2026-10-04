@@ -13,12 +13,17 @@ usage() {
   cat <<'EOF'
 nft-bypass.sh — let traffic that must keep its own path past skvpn's TUN
 
-  nft-bypass.sh apply [--tailscale] [--docker] [--syncthing]
+  nft-bypass.sh apply [--tailscale [--tailscale-via-tunnel ADDRESS]...] [--docker]
+                      [--syncthing]
 
 Waits for sing-box's `inet sing-box` table, then inserts return rules into it.
 Always: replies to inbound UDP leave by the host's routes, not through the TUN.
 
   --tailscale   packets tailscaled marks for its own bypass (0x80000) skip the TUN
+  --tailscale-via-tunnel ADDRESS
+                except those to ADDRESS, an IPv4 or IPv6 address: a peer on the
+                exit node itself, which tailscaled then reaches inside the
+                tunnel; repeatable
   --docker      traffic from dynamically named br-* Docker bridges skips the TUN
   --syncthing   UDP from Syncthing's default listening port, 22000, skips the TUN,
                 so its QUIC keeps the source port peers know it by
@@ -60,12 +65,22 @@ wait_for_chains() {
 }
 
 cmd_apply() {
-  local tailscale=0 docker=0 syncthing=0 rules chain
+  local tailscale=0 docker=0 syncthing=0 rules chain match m
+  local via4="" via6=""
   while (($#)); do
     case "$1" in
       --tailscale)
         tailscale=1
         shift
+        ;;
+      --tailscale-via-tunnel)
+        (($# >= 2)) || die "--tailscale-via-tunnel needs an address"
+        case "$2" in
+          '' | *[!0-9A-Fa-f.:]*) die "not an IP address: $2" ;;
+          *:*) via6+="${via6:+, }$2" ;;
+          *) via4+="${via4:+, }$2" ;;
+        esac
+        shift 2
         ;;
       --docker)
         docker=1
@@ -78,15 +93,29 @@ cmd_apply() {
       *) die "no such flag: $1" ;;
     esac
   done
+  if [[ -n "$via4$via6" ]] && ((! tailscale)); then
+    die "--tailscale-via-tunnel needs --tailscale"
+  fi
 
   # output_udp_icmp is the chain that marks UDP for the TUN without asking whether the
   # packet answers a connection that arrived from outside
   rules="insert rule $TABLE output_udp_icmp ct direction reply return comment \"skvpn: replies to inbound UDP\""
   if ((tailscale)); then
+    # One match for both families, or one per family once an exit address is named: an
+    # `ip daddr` match in an inet table holds only for IPv4, so the IPv6 side needs its own
+    if [[ -z "$via4$via6" ]]; then
+      match=("")
+    else
+      match=("${via4:+ip daddr != { $via4 }}" "${via6:+ip6 daddr != { $via6 }}")
+      [[ -n "$via4" ]] || match[0]="meta nfproto ipv4"
+      [[ -n "$via6" ]] || match[1]="meta nfproto ipv6"
+    fi
     # All three output chains: prematch would hand the packet to sing-box, the nat chain
     # would redirect tailscaled's TCP to DERP, and the route chain would overwrite the mark
     for chain in output_prematch output output_udp_icmp; do
-      rules+=$'\n'"insert rule $TABLE $chain meta mark & 0x00ff0000 == 0x00080000 return comment \"skvpn: bypass Tailscale\""
+      for m in "${match[@]}"; do
+        rules+=$'\n'"insert rule $TABLE $chain ${m:+$m }meta mark & 0x00ff0000 == 0x00080000 return comment \"skvpn: bypass Tailscale\""
+      done
     done
   fi
   if ((syncthing)); then

@@ -212,8 +212,12 @@
                   "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "sudoRules", "timerInterval",
-                  "tmpfiles", "unitPath", "users"
+                  "tmpfiles", "tunedBroken", "unitPath", "users", "viaTunnelAloneBroken"
                 ]' "the dump no longer has the keys these checks read"
+
+                # An exit address only narrows the Tailscale bypass, so it needs one to narrow
+                want '.tunedBroken == []' "a tailnet with an exit address trips an assertion"
+                want '.viaTunnelAloneBroken | length == 1 and (.[0] | test("viaTunnel"))' "an exit address without the Tailscale bypass was not refused"
 
                 # A split entry that would catch sing-box itself is refused at eval time
                 want '.splitBroken == []' "a plain split list trips an assertion"
@@ -257,7 +261,8 @@
                 want '.base | fromjson | .inbounds[0].exclude_interface == ["docker0"]' "the docker bridge is not excluded"
                 # The bypass rules live in the packaged script; the module only picks the flags
                 want '.postStart | test("/libexec/skvpn/nft-bypass apply( |$)")' "the unit does not run the packaged bypass script"
-                want '.postStart | split(" ") | .[2:] | sort == ["--docker", "--syncthing", "--tailscale"]' "a bypass flag never reached the unit"
+                want '.postStart | split(" ") | .[2:] | map(select(startswith("--"))) | unique == ["--docker", "--syncthing", "--tailscale", "--tailscale-via-tunnel"]' "a bypass flag never reached the unit"
+                want '.postStart | test(" --tailscale-via-tunnel 192\\.0\\.2\\.10 --tailscale-via-tunnel 2001:db8::10( |$)")' "an exit address never reached the unit"
                 want '.barePostStart | endswith("nft-bypass apply")' "a bare unit passes bypass flags nobody asked for"
                 want '.unitPath | test("nftables")' "the bypass script has no nft on its PATH"
                 want '.base | fromjson | .inbounds[0].stack == "gvisor"' "the TUN stack never reached the inbound"
@@ -427,7 +432,7 @@
                 ];
               }
               ''
-                files="${installer} ${bypassScript} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/docker-routing.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash ${checkSh}"
+                files="${installer} ${bypassScript} ${testsDir}/run.sh ${testsDir}/distro.sh ${testsDir}/docker-routing.sh ${testsDir}/tailscale-routing.sh ${testsDir}/stub/* ${completionsDir}/skvpn.bash ${completionsDir}/install.sh.bash ${checkSh}"
                 # shellcheck disable=SC2086
                 shellcheck $files
                 # shellcheck disable=SC2086
@@ -462,8 +467,11 @@
         };
         ci-docker-routing = pkgs.mkShell {
           packages = with pkgs; [
+            iproute2
             nftables
+            python3
             sing-box
+            util-linux
           ];
         };
       });

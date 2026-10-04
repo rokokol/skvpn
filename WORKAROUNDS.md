@@ -14,6 +14,8 @@ Arrangements that exist only because sing-box leaves no cleaner route. Each entr
 
 **Why this works:** a return for `meta mark & 0x00ff0000 == 0x00080000` at the top of `output_prematch`, `output` and `output_udp_icmp` leaves the mark as tailscaled set it, so its own rule routes the packet
 
+**The exception for an exit node:** a peer that runs on the exit node itself can need the TUN. When the exit's firewall keeps the WireGuard port closed to the world, as a node hidden from DPI does, no direct path past the tunnel exists, and the peer falls back to a DERP relay, which a censor can block too. `tailscale.viaTunnel` on NixOS and `--tailscale-via-tunnel` for the installer name the exit's public addresses. The return rules then hold only for other destinations, one rule per address family, because an `ip daddr` match in an inet table holds only for IPv4. tailscaled's packets to the exit reach the TUN, the exit's proxy sends them to its own public address, and the kernel hands them to the local tailscaled. `tailscale ping` then answers `via <exit address>:<port>` instead of `via DERP(...)`. The address has to be where the traffic leaves the chain: a first hop that forwards to another node sends the packets on, and they arrive at the wrong peer
+
 **Rejected alternative:** a split entry for `tailscaled`. sing-box would route the packets `direct`, but the direct outbound sends them from a new socket and a new port, and WireGuard's NAT traversal depends on the port the peers already know
 
 **Removal check:** with a profile up and the rules not inserted, read the chain sing-box created

@@ -4,6 +4,10 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ## [Unreleased]
 
+### Added
+
+- `tailscale.viaTunnel` on NixOS and repeatable `--tailscale-via-tunnel ADDRESS` for the installer send tailscaled's packets to an exit node's public address through the tunnel, while every other peer stays off it. A tailnet peer on the exit then answers directly through the tunnel, as it did before 3.0.0, even when its WireGuard port is closed to the world and the DERP relays are blocked. A runtime test proves the routing on a real sing-box
+
 ### Changed
 
 - the DNS-over-TLS server behind the tunnel defaults to Cloudflare's `1.1.1.1` instead of Google's `8.8.8.8`, on NixOS (`dns.remoteServer`) and for the installer (`--dns-server`). Google forwards a part of the client address to the sites it resolves, and Cloudflare does not. A host that sets the server keeps it

@@ -113,6 +113,10 @@ let
   bypassCommand = lib.concatStringsSep " " (
     [ "${cfg.package}/libexec/skvpn/nft-bypass apply" ]
     ++ lib.optional cfg.tailscale.enable "--tailscale"
+    ++ lib.concatMap (address: [
+      "--tailscale-via-tunnel"
+      address
+    ]) cfg.tailscale.viaTunnel
     ++ lib.optional cfg.docker.enable "--docker"
     ++ lib.optional cfg.syncthing.enable "--syncthing"
   );
@@ -429,6 +433,19 @@ in
       '';
     };
 
+    tailscale.viaTunnel = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "203.0.113.7" ];
+      description = ''
+        Public addresses of exit nodes that are tailnet peers too. tailscaled's packets to
+        them go through the tunnel instead of past it, and the exit hands them to its own
+        tailscaled, so the peer is reached directly even where its port is closed to the
+        world and the DERP relays are blocked. Only an exit where the traffic leaves the
+        chain, not the first hop of one. Needs `tailscale.enable`
+      '';
+    };
+
     docker.enable = lib.mkOption {
       type = lib.types.bool;
       default = config.virtualisation.docker.enable or false;
@@ -655,6 +672,13 @@ in
           services.skvpn.split: ${lib.concatStringsSep ", " splitCatchesSingBox} would
           match sing-box itself — its traffic never enters the tunnel, and a pattern that
           wide catches everything
+        '';
+      }
+      {
+        assertion = cfg.tailscale.viaTunnel == [ ] || cfg.tailscale.enable;
+        message = ''
+          services.skvpn.tailscale.viaTunnel narrows the Tailscale bypass, which is off:
+          without tailscale.enable every tailscaled packet takes the tunnel anyway
         '';
       }
     ];

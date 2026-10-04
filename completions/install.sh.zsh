@@ -15,6 +15,7 @@ _install_sh_skvpn() {
     '--no-systemd[skip every live systemctl and sysctl call]' \
     '--fix-discord-voice[loose IPv4 reverse-path filtering for tunnelled UDP]' \
     '--tailscale[keep Tailscale ranges and tailscaled traffic out of the TUN]' \
+    '*--tailscale-via-tunnel[an exit address whose tailnet peer goes through the TUN]:address:' \
     '--docker[keep the docker0 and br-* bridges out of the TUN]' \
     '--syncthing[keep UDP from Syncthing port 22000 out of the TUN]' \
     '--guard-ai[while no profile is up, refuse AI services]' \
