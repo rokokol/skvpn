@@ -1165,7 +1165,8 @@ def sfa_config(names, active, tailscale):
     dns_rules = []
     route_rules = [{"action": "sniff"}, {"protocol": "dns", "action": "hijack-dns"}]
     if tailscale:
-        dns_rules.append({"domain_suffix": [".ts.net"], "action": "route", "server": "tailnet"})
+        # The server itself says which names are the tailnet's, short ones included
+        dns_rules.append({"preferred_by": "tailnet", "action": "route", "server": "tailnet"})
         route_rules.append({"ip_cidr": policy()["tailnet"], "outbound": "tailnet"})
     if guarded:
         for match in guarded:
@@ -1194,6 +1195,8 @@ def sfa_config(names, active, tailscale):
             "type": "tailscale",
             "endpoint": "tailnet",
             "accept_default_resolvers": False,
+            # A phone has no search domain: `se-1` resolves only if the tailnet expands it
+            "accept_search_domain": True,
         })
     config = {
         "log": {"level": "warn", "timestamp": True},

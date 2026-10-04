@@ -594,6 +594,21 @@ else
   fail "the host guard did not become a Direct mode that refuses its sites, or it took the tailnet"
 fi
 
+# A phone has no search domain, so `se-1` resolves only if the tailnet's own DNS server
+# expands it, and only if the first DNS rule hands that server every name it claims
+world export-sfa-resolves-short-tailnet-names
+sv add "$HY2" >/dev/null
+sfa_base
+sfa_guard
+out=$(sv export --sfa 2>/dev/null) || true
+if jq -e '(.dns.servers | map(select(.tag == "tailnet"))[0].accept_search_domain == true) and
+    (.dns.rules[0] | .preferred_by == "tailnet" and .action == "route" and .server == "tailnet")' \
+  <<<"$out" >/dev/null; then
+  ok
+else
+  fail "the phone's tailnet DNS does not take single-label names first"
+fi
+
 world export-sfa-has-no-mode-without-a-guard
 sv add "$HY2" >/dev/null
 sfa_base

@@ -8,6 +8,10 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 - `direct.bittorrent.enable` on NixOS and `--direct-bittorrent` for the installer route BitTorrent around the tunnel: the common clients `policy.json` lists join the split names whole, each also under the `.NAME-wrapped` name a Nix wrapper runs as, and traffic the sniffer recognises as BitTorrent leaves direct whatever the process. Off by default
 
+### Fixed
+
+- a phone on `skvpn export --sfa` resolves short tailnet names such as `se-1`, as a host with Tailscale does: the tailnet's DNS server expands them by its search domains, and it takes every name it claims rather than only those under `.ts.net`
+
 ## [3.0.0] - 2026-10-03
 
 ### Added
