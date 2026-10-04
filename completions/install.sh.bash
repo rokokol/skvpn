@@ -15,7 +15,7 @@ _install_sh_skvpn() {
     -h --help -v --version --prefix --destdir --uninstall --no-systemd
     --fix-discord-voice --tailscale --docker --syncthing
     --guard-ai --guard-zone --guard-geosite
-    --direct-russia --direct-china --direct-iran
+    --direct-russia --direct-china --direct-iran --direct-bittorrent
     --direct-zone --direct-geosite --direct-geoip --split
     --tun-interface --tun-address --stack --no-ipv6 --dns-server
     --extra-settings --no-restore --sync-interval --trusted-user

@@ -72,6 +72,8 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
   --direct-russia      route Russian zones, geosite and geoip directly
   --direct-china       route Chinese zones, geosite and geoip directly
   --direct-iran        route Iranian zones, geosite and geoip directly
+  --direct-bittorrent  route BitTorrent directly: the clients policy.json names, and
+                       the protocol wherever the sniffer reads it
   --direct-zone SUFFIX route an additional domain suffix directly; repeatable
   --direct-geosite TAG=PATH
                        add a local domain rule-set; repeatable
@@ -159,6 +161,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --direct-russia | --direct-china | --direct-iran)
       CONFIG_ARGS+=(--preset "${1#--direct-}")
+      shift
+      ;;
+    --direct-bittorrent)
+      CONFIG_ARGS+=(--bittorrent)
       shift
       ;;
     --direct-zone | --direct-geosite | --direct-geoip | --tun-interface | --tun-address | --dns-server | --stack | --guard-zone | --guard-geosite)

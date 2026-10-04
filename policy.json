@@ -34,5 +34,20 @@
   "guard": {
     "tag": "ai",
     "geosite": "geosite-category-ai-!cn.srs"
+  },
+  "bittorrent": {
+    "clients": [
+      "fragments",
+      "ktorrent",
+      "qbittorrent",
+      "qbittorrent-nox",
+      "rqbit",
+      "rtorrent",
+      "tixati",
+      "transmission-cli",
+      "transmission-daemon",
+      "transmission-gtk",
+      "transmission-qt"
+    ]
   }
 }

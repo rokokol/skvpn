@@ -23,6 +23,7 @@ _install_sh_skvpn() {
     '--direct-russia[route Russian zones, geosite and geoip directly]' \
     '--direct-china[route Chinese zones, geosite and geoip directly]' \
     '--direct-iran[route Iranian zones, geosite and geoip directly]' \
+    '--direct-bittorrent[route BitTorrent clients and the sniffed protocol directly]' \
     '*--direct-zone[route an additional domain suffix directly]:suffix:' \
     '*--direct-geosite[add a local domain rule-set]:tag=path:' \
     '*--direct-geoip[add a local address rule-set]:tag=path:' \

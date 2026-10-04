@@ -63,7 +63,15 @@ let
     (if kind == "name" then "(^|/)" else "^")
     + lib.replaceStrings [ "\\*\\*" "\\*" "\\?" ] [ ".*" "[^/]*" "[^/]" ] (lib.escapeRegex pattern)
     + "$";
-  splitNames = lib.filter (p: !isGlob p) cfg.split.names;
+  # The BitTorrent clients join the split names: each under its own name and the one a
+  # Nix wrapper runs as, which is what sing-box reads off /proc/<pid>/exe
+  bittorrentNames = lib.optionals cfg.direct.bittorrent.enable (
+    lib.concatMap (name: [
+      name
+      ".${name}-wrapped"
+    ]) policy.bittorrent.clients
+  );
+  splitNames = lib.unique (lib.filter (p: !isGlob p) cfg.split.names ++ bittorrentNames);
   splitPaths = lib.filter (p: !isGlob p) cfg.split.paths;
   splitRegex =
     map (globRegex "name") (lib.filter isGlob cfg.split.names)
@@ -328,6 +336,12 @@ let
       ++ lib.optional (cfg.split.ips != [ ]) {
         ip_cidr = cfg.split.ips;
         outbound = "direct";
+      }
+      # Any client the list misses, where the sniffer can read it: plain TCP handshakes,
+      # uTP and UDP tracker requests
+      ++ lib.optional cfg.direct.bittorrent.enable {
+        protocol = [ "bittorrent" ];
+        outbound = "direct";
       };
 
       rule_set =
@@ -457,6 +471,20 @@ in
         ) presets
       )
       // {
+        bittorrent.enable = lib.mkEnableOption "" // {
+          description = ''
+            Route BitTorrent around the tunnel, for exits that refuse it or whose host
+            answers its abuse reports. Two rules: the clients `policy.json` names join the
+            split names, each also as the `.NAME-wrapped` a Nix wrapper runs as, so all their
+            traffic and DNS leave direct; and the `bittorrent` protocol the sniffer detects
+            leaves direct whatever the process. The sniffer reads plain handshakes, uTP and
+            UDP tracker requests only, so an unlisted client still sends encrypted TCP peers,
+            DHT and HTTPS trackers through the tunnel. A client run by an interpreter, such
+            as Deluge on Python or BiglyBT on Java, has the interpreter's name and is never
+            on the list
+          '';
+        };
+
         zones = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];

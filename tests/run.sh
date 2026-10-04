@@ -1153,6 +1153,22 @@ else
   fail "non-Nix options did not reach their config, unit, or policy files"
 fi
 
+# The same policy as the NixOS option: the sniffed protocol direct, and the clients joining
+# the split names under both their own name and the one a Nix wrapper runs as
+world installer-routes-bittorrent-direct
+base="$SKVPN_ROOT/stage/etc/sing-box/base.d/00-base.json"
+if "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --direct-bittorrent --split firefox >/dev/null 2>&1 &&
+  jq -e '.route.rules | map(select(.protocol == ["bittorrent"])) == [{"protocol": ["bittorrent"], "outbound": "direct"}]' "$base" >/dev/null &&
+  jq -e --slurpfile p "$REPO/policy.json" '
+	(["firefox"] + [$p[0].bittorrent.clients[] | ., ".\(.)-wrapped"]) as $want |
+	[.route.rules[], .dns.rules[] | select(has("process_name")) | .process_name] |
+	length == 2 and all(. as $names | $want - $names == [])
+' "$base" >/dev/null; then
+  ok
+else
+  fail "--direct-bittorrent did not route the protocol and every client direct"
+fi
+
 # The TUN's v6 address is the one default a host without IPv6 has to be able to drop, and
 # --tun-address is not that lever: it replaces the pair rather than trimming it
 world installer-drops-the-tun-ipv6-address
@@ -1229,7 +1245,7 @@ world installer-help-lists-every-feature
 help=$("$REPO/install.sh" --help)
 missing=""
 for option in help version prefix destdir uninstall no-systemd tailscale docker syncthing \
-  guard-ai guard-zone guard-geosite direct-russia direct-china direct-iran direct-zone direct-geosite \
+  guard-ai guard-zone guard-geosite direct-russia direct-china direct-iran direct-bittorrent direct-zone direct-geosite \
   direct-geoip split tun-interface tun-address dns-server extra-settings no-restore sync-interval \
   trusted-user fix-discord-voice stack no-ipv6; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"

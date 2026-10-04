@@ -143,6 +143,15 @@ let
     };
   };
 
+  # BitTorrent beside a split name of the consumer's own, which the client list joins
+  bittorrentOn = eval {
+    services.skvpn = {
+      enable = true;
+      direct.bittorrent.enable = true;
+      split.names = [ "firefox" ];
+    };
+  };
+
   # The guard with every source of sites on, under a TUN name moved away from the default
   guardOn = eval {
     services.skvpn = {
@@ -208,6 +217,8 @@ in
   guardRestoreOffWantedBy = guardRestoreOff.systemd.services.skvpn-guard.wantedBy;
 
   presetsBase = presetsOn.environment.etc."sing-box/base.d/00-base.json".text;
+
+  bittorrentBase = bittorrentOn.environment.etc."sing-box/base.d/00-base.json".text;
 
   restoreOffServices = lib.attrNames restoreOff.systemd.services;
 

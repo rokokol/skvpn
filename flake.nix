@@ -207,7 +207,7 @@
                 # check read the key first — and jq answers 0 for the length of a missing one
                 want 'keys == [
                   "aliases", "bareAliases", "bareBase", "bareEtc", "barePostStart", "bareServices",
-                  "base", "capabilities", "extra", "firewall", "guard", "guardBase",
+                  "base", "bittorrentBase", "capabilities", "extra", "firewall", "guard", "guardBase",
                   "guardRestoreOffWantedBy", "guardUnit", "offAliases", "offEtc", "offFirewall",
                   "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
@@ -231,7 +231,20 @@
                 want '.splitBase | fromjson | .dns.rules == [{"process_name": ["firefox"], "action": "route", "server": "bootstrap"}, {"process_path": ["/usr/bin/steam"], "action": "route", "server": "bootstrap"}, {"process_path_regex": ["(^|/)chrom[^/]*$", "^/opt/[^/]*/bin/tor$"], "action": "route", "server": "bootstrap"}]' "split DNS rules drifted"
                 # The action form, not the legacy bare `server` sing-box deprecated in 1.11
                 want '.base | fromjson | .dns.rules | all(.action == "route")' "a DNS rule is in the legacy form"
-                want '.bareBase | fromjson | .route.rules | map(select(has("process_name") or has("process_path") or has("ip_cidr"))) == []' "a bare base carries split rules"
+                want '.bareBase | fromjson | .route.rules | map(select(has("process_name") or has("process_path") or has("ip_cidr") or .protocol == ["bittorrent"])) == []' "a bare base carries split rules"
+
+                # BitTorrent: the sniffed protocol direct, and every client policy.json names
+                # joins the split names under its own name and the name a Nix wrapper runs as
+                want '.bittorrentBase | fromjson | .route.rules | map(select(.protocol == ["bittorrent"] and .outbound == "direct")) | length == 1' "sniffed BitTorrent is not routed direct"
+                want '.bittorrentBase | fromjson | [.route.rules[], .dns.rules[] | select(has("process_name")) | .process_name] | length == 2 and all(. as $names | ${
+                  builtins.toJSON (
+                    [ "firefox" ]
+                    ++ lib.concatMap (name: [
+                      name
+                      ".${name}-wrapped"
+                    ]) policy.bittorrent.clients
+                  )
+                } - $names == [])' "a BitTorrent client or a consumer's split name is missing from routing or DNS"
 
                 # Every policy knob has to reach the rendered base, or it is decoration
                 want '.base | fromjson | .dns.rules[0].domain_suffix == [".ru", ".su"]' "zones never reached DNS"

@@ -110,6 +110,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--tailscale", action="store_true")
 parser.add_argument("--docker", action="store_true")
 parser.add_argument("--preset", action="append", choices=PRESETS, default=[])
+# The sniffed protocol and the clients policy.json names leave direct
+parser.add_argument("--bittorrent", action="store_true")
 parser.add_argument("--direct-zone", action="append", default=[])
 parser.add_argument("--direct-geosite", action="append", type=tagged_path, default=[])
 parser.add_argument("--direct-geoip", action="append", type=tagged_path, default=[])
@@ -177,7 +179,14 @@ if not args.skip_path_check:
 geosite_tags = sorted(geosite)
 geoip_tags = sorted(geoip)
 rule_tags = geosite_tags + geoip_tags
-all_names = list(dict.fromkeys(args.split_name))
+# Each client also under the name a Nix wrapper runs as, which is what sing-box reads
+# off /proc/<pid>/exe; the NixOS module joins the same names
+bittorrent_names = [
+    name
+    for client in (POLICY["bittorrent"]["clients"] if args.bittorrent else [])
+    for name in (client, f".{client}-wrapped")
+]
+all_names = list(dict.fromkeys(args.split_name + bittorrent_names))
 all_paths = list(dict.fromkeys(args.split_path))
 split_names = [v for v in all_names if not is_glob(v)]
 split_paths = [v for v in all_paths if not is_glob(v)]
@@ -238,6 +247,10 @@ if split_regex:
     route_rules.append({"process_path_regex": split_regex, "outbound": "direct"})
 if split_ips:
     route_rules.append({"ip_cidr": split_ips, "outbound": "direct"})
+# Any client the list misses, where the sniffer can read it: plain TCP handshakes, uTP
+# and UDP tracker requests
+if args.bittorrent:
+    route_rules.append({"protocol": ["bittorrent"], "outbound": "direct"})
 
 config = {
     "log": {"level": "warn", "timestamp": True},

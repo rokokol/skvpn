@@ -2,6 +2,12 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
+## [Unreleased]
+
+### Added
+
+- `direct.bittorrent.enable` on NixOS and `--direct-bittorrent` for the installer route BitTorrent around the tunnel: the common clients `policy.json` lists join the split names whole, each also under the `.NAME-wrapped` name a Nix wrapper runs as, and traffic the sniffer recognises as BitTorrent leaves direct whatever the process. Off by default
+
 ## [3.0.0] - 2026-10-03
 
 ### Added
