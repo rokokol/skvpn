@@ -2,11 +2,11 @@
   "nodes": {
     "nixpkgs": {
       "locked": {
-        "lastModified": 1791048980,
-        "narHash": "sha256-KgItSKML8Xvte0B7/uGnBDsYzSnnKHcOaiUbgWBXLXw=",
+        "lastModified": 1791594108,
+        "narHash": "sha256-XK4KceonkwD8LuMAt/vNrz982mXJM5jeHAxMwsUXXAQ=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "a7868a727837f3c09cee2ce0ca671c76b1589fed",
+        "rev": "6510408d147d8c5e6d76043e899e9251756f6a75",
         "type": "github"
       },
       "original": {
@@ -43,11 +43,11 @@
     "sing-geosite": {
       "flake": false,
       "locked": {
-        "lastModified": 1791175917,
-        "narHash": "sha256-zS0DapDiVoDMqoXfPgPY4IVSBUxgL8lfodRz3S+F7qg=",
+        "lastModified": 1791608859,
+        "narHash": "sha256-1x1O41vwXq9BBgbId7zm45x8k0hEJI7vjiukukJZBRY=",
         "owner": "SagerNet",
         "repo": "sing-geosite",
-        "rev": "be94d52ad035da5350a1e5f62515185725034d86",
+        "rev": "df6851d87aeaeb9d6a9464288b317e7ff2288d78",
         "type": "github"
       },
       "original": {
