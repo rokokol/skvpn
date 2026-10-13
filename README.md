@@ -62,11 +62,14 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn ping [--servers] [<name>…]` | latency to the ping site through every profile, or the named ones, without switching: one throwaway sing-box carries them all; `--servers` adds the addresses |
 | `skvpn ping set <host\|url>` | the site to reach for; a bare host becomes `https://host/`, https only — sing-box's test quietly swaps a plain-http site for its own; default `https://www.google.com/generate_204` |
 | `skvpn status --ping [--servers]` | the status lines, then the ping table |
+| `skvpn measure [--textfile PATH] [<name>…]` | latency, time to the first byte and download speed over TCP, round trip and loss over UDP, through every profile or the named ones, without switching; each exit downloads one bounded file in turn; `--textfile` writes [Prometheus metrics](#measure) for node_exporter instead of the table |
+| `skvpn measure set <url>` | the file to download, https only; default is a Cloudflare speed-test file |
+| `skvpn top [--count N]` | live speed through the tunnel, from the running sing-box; needs the [monitor](#top) option; `d` measures a download through the tunnel; piped, it prints a line a second |
 | `skvpn status` | the active profile or the running guard, the boot choice (only while boot restore is enabled), the age of the last sync |
 | `skvpn export [<name>]` | the config a profile runs with here — the base, the split list and the profile merged by sing-box itself; the running profile when none is named |
 | `skvpn export --sfa [--no-tailscale] [<name>…]` | a whole config for [a phone](#a-phone) |
 
-Everything that writes or talks to systemd needs root, and so does `ping` (it reads the profiles); `ls --names`, `status`, `split ls` and a bare `boot` do not
+Everything that writes or talks to systemd needs root, and so do `ping`, `measure` and `top` (the profiles and the API secret are root-only); `ls --names`, `status`, `split ls` and a bare `boot` do not
 
 `down` forgets the last `up` but leaves a pin alone — pinning is precisely "this one on boot, whatever I switch to meanwhile". A pinned profile that gets deleted or pruned drops its pin, and boot follows the last `up` again. The word `last` is reserved by `boot`, so a profile of that name cannot be pinned
 
@@ -78,6 +81,9 @@ Everything that writes or talks to systemd needs root, and so does `ping` (it re
 /etc/sing-box/base.d/70-split.json  the imperative split list — written by `skvpn split`
 /etc/sing-box/guard.json            the guard laid over the base, when one is configured
 /etc/sing-box/ping.url              the site `skvpn ping` reaches for, when set
+/etc/sing-box/measure.url           the file `skvpn measure` downloads, when set
+/etc/sing-box/base.d/60-clash.json  the Clash API for `skvpn top` — written at start by the NixOS `monitor` option, never by hand
+/var/lib/skvpn/clash-secret         that API's secret, root-only
 share/skvpn/policy.json             presets, the tailnet and the rule-sets' sources — installed beside the CLI
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default
@@ -89,6 +95,29 @@ The unit runs `sing-box -C /etc/sing-box/base.d -c /etc/sing-box/profiles/<name>
 ### Ping
 
 `skvpn ping` measures every profile at once without switching: it starts one throwaway sing-box with no inbounds, every profile as an outbound tagged with its name and the Clash API on loopback, asks it for a URL test through each, and stops it. The probe binds to the physical interface and carries the mark the active TUN's `auto_redirect` lets out (`0x2024`, read back from the base if moved), so with a profile up the numbers are still measured outside the tunnel, not inside it. Only the nodes' own hostnames are resolved locally, by the system resolver like the base's bootstrap; the site's name travels to each node and is resolved there, as it does through the tunnel, so nothing DNS-shaped leaves the client to be blocked. Needs root — the profiles are root-only — and a `sing-box` binary: the one on `PATH`, else `/run/current-system/sw/bin`, else `/usr/bin`, overridden by `SKVPN_SING_BOX`. The target lives in `/etc/sing-box/ping.url`
+
+### Measure
+
+`skvpn measure` is `ping` taken further, on the same kind of throwaway sing-box: each exit also gets a local proxy port and a local UDP port that lead through that exit only. Per exit it reports the TCP latency `ping` reports, the time to the first byte and the download speed of one bounded https file fetched through the exit, and the round trip and loss of a few DNS queries sent through the exit over UDP, so a node whose UDP is broken shows up. Latency and the UDP queries run for all exits at once; the downloads run one exit at a time, because a download fills the link and two at once would measure each other. A download cut off at its time limit still counts, and a reply that is not the answer to the query asked does not. The file defaults to a Cloudflare speed-test file and `skvpn measure set <url>` changes it, https only for the reason `ping` gives. Needs root, a `sing-box` binary as `ping` does, and `curl`
+
+`--textfile PATH` writes the result as Prometheus text for node_exporter's textfile collector instead of printing a table: the file is replaced whole, so the collector never reads half of one, and a profile that is gone drops out of it. Every sample is labelled with the profile name and nothing else, so no node address reaches a dashboard. An exit that could not do a thing has no sample for it rather than a zero, and `skvpn_exit_up` and `skvpn_udp_up` say whether it could. On NixOS the `measure` options run this on a timer
+
+| Metric | What it says |
+| --- | --- |
+| `skvpn_exit_up` | 1 when the exit carried a TCP request |
+| `skvpn_tcp_latency_seconds` | time to the first header of a HEAD through the exit |
+| `skvpn_tcp_ttfb_seconds` | time to the first byte of the download |
+| `skvpn_tcp_download_bytes_per_second` | download speed after the first byte |
+| `skvpn_udp_up` | 1 when at least one DNS query came back |
+| `skvpn_udp_rtt_seconds` | median round trip of the answered queries |
+| `skvpn_udp_loss_ratio` | share of the queries that got no answer |
+| `skvpn_measure_timestamp_seconds`, `skvpn_measure_duration_seconds` | when the run ended and how long it took, with no label |
+
+### Top
+
+`skvpn top` shows the speed through the running tunnel live, read from sing-box's Clash API. The live base has no such API by default: on NixOS turn on `monitor.enable`, which opens the API on loopback only and guards it with a secret, because a loopback API without one would let any local user reset the network. **Turning it on restarts the running tunnel once**, the way any change to the base does, and turning it off restarts it again. The secret is made on the first start and kept in a file only root reads, and `top` reads the address and the secret from the live base, refusing an address that is not loopback. A non-Nix install has no option for it: add an `experimental.clash_api` with a secret to a file in `base.d` by hand
+
+On a terminal `top` redraws a screen with the current and peak speed in both directions, a short history of the received speed and the totals. `d` starts a download through the tunnel and shows its speed, to see what the tunnel can do right now; the monitor counts that download too, so rx rises while it runs, and the screen says so. `q` quits. Piped, it prints one line a second, and `--count N` stops after N of them
 
 ### Split tunnelling
 
@@ -163,6 +192,11 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
 | `sync.interval` | `"daily"` | `OnCalendar` for the subscription refresh |
+| `measure.enable` | `false` | run [`skvpn measure`](#measure) on a timer as a root oneshot with a memory cap and a time limit; each run downloads a bounded file through every exit, so it costs that traffic |
+| `measure.interval` | `"1h"` | the wait from the end of one run to the start of the next, so a slow run never overlaps the next |
+| `measure.textfile` | `null` | where the metrics go for node_exporter's textfile collector; `null` prints the table to the journal |
+| `monitor.enable` | `false` | open the Clash API on loopback behind a root-made secret for [`skvpn top`](#top); turning it on or off restarts the tunnel once |
+| `monitor.port` | see the module | the API's loopback port |
 | `fixDiscordVoice` | `true` | loosen the firewall's reverse-path filter (as a default an explicit host value beats): replies to tunnelled UDP arrive on the TUN while the route points at the LAN, and a strict filter drops them — Discord voice is how that shows up |
 | `tun.interfaceName`, `tun.address`, `dns.remoteServer` | `skvpn-tun`, `172.19.0.1/30` + ULA, `1.1.1.1` | the base config's fixed points |
 | `tun.ipv6` | `true` | give the TUN a v6 address. Turn it off on a host with no IPv6 upstream: `auto_route` otherwise installs a v6 default route to nowhere, and whatever reaches for v6 first waits on it — the DNS strategy does not cover this, because an application carrying its own addresses never asks |

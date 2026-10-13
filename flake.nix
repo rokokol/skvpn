@@ -207,9 +207,11 @@
                 # check read the key first — and jq answers 0 for the length of a missing one
                 want 'keys == [
                   "aliases", "bareAliases", "bareBase", "bareEtc", "barePostStart", "bareServices",
-                  "base", "bittorrentBase", "capabilities", "extra", "firewall", "guard", "guardBase",
-                  "guardRestoreOffWantedBy", "guardUnit", "offAliases", "offEtc", "offFirewall",
-                  "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
+                  "bareTimers", "base", "bittorrentBase", "capabilities", "extra", "firewall", "guard",
+                  "guardBase", "guardRestoreOffWantedBy", "guardUnit", "measureNoFileExec",
+                  "measureServices", "measureTimer", "measureUnit", "monitorEtc",
+                  "monitorGuardScript", "monitorOffScript", "monitorScript", "offAliases", "offEtc",
+                  "offFirewall", "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "sudoRules", "timerInterval",
                   "tmpfiles", "unitPath", "users"
@@ -335,6 +337,24 @@
                 want '.guardUnit.wantedBy == []' "the guard races boot restore"
                 want '.guardRestoreOffWantedBy == ["multi-user.target"]' "without restore nothing starts the guard at boot"
 
+                # The timed measurement: off unless asked for, then a root oneshot counted from
+                # its own end, with the limits that keep a stuck run from living on
+                want '.bareServices | index("skvpn-measure") | not' "the measurement runs without being asked for"
+                want '.bareTimers == ["skvpn-sync"]' "a timer exists beside the sync one without being asked for"
+                want '.measureServices | index("skvpn-measure")' "measure.enable never made the unit"
+                want '.measureTimer == {"OnBootSec": "5min", "OnUnitInactiveSec": "30min"}' "the measurement timer is not counted from the end of a run, or lost its interval"
+                want '.measureUnit.serviceConfig | .Type == "oneshot" and .MemoryMax == "256M" and .TimeoutStartSec == "15min"' "the measurement unit lost a limit"
+                want '.measureUnit.serviceConfig.ExecStart | endswith(" measure --textfile /var/lib/collector/skvpn.prom")' "the textfile never reached the unit"
+                want '.measureNoFileExec | endswith(" measure")' "a null textfile still reached the unit"
+                want '.measureUnit.path | test("curl")' "the measurement unit has no curl"
+                want '.measureUnit.environment.SKVPN_SING_BOX | test("/bin/sing-box$")' "the measurement unit does not run the module's sing-box"
+
+                # The Clash API: the secret never goes through the store, so no etc entry
+                # carries it; the unit that starts sing-box writes it, whether on or off
+                want '.monitorEtc == ["sing-box/base.d/00-base.json"]' "the Clash API became an etc entry, which the store would make world-readable"
+                want '.monitorScript != .monitorOffScript' "monitor.enable changes nothing in the script that opens the API"
+                want '.monitorGuardScript == .monitorOffScript' "the guard and the profile unit run different scripts for the API"
+
                 # …and everything can be turned off
                 want '.offEtc == []' "a config file survives disabling"
                 want '.offPackages == []' "a package is installed while disabled"
@@ -344,6 +364,57 @@
                 want '.offFirewall == null' "the firewall is touched while disabled"
                 want '.offSudoRules == []' "a sudo rule survives disabling"
                 want '.offAliases == {}' "an alias survives disabling"
+                touch $out
+              '';
+
+          # The script that opens the Clash API writes a secret, so it is run, not only
+          # read: the paths it names are redirected into a scratch tree, and the sandbox has
+          # no sing-box group to hand the file to
+          monitor-script =
+            let
+              wiring = import ./nix/module-test.nix {
+                inherit lib pkgs;
+                nixosModule = self.nixosModules.default;
+              };
+            in
+            pkgs.runCommand "monitor-script"
+              {
+                nativeBuildInputs = with pkgs; [
+                  bash
+                  coreutils
+                  gnused
+                  jq
+                ];
+                scriptOn = wiring.monitorScript;
+                scriptOff = wiring.monitorOffScript;
+              }
+              ''
+                root=$PWD/root
+                mkdir -p "$root/etc/sing-box/base.d"
+                api="$root/etc/sing-box/base.d/60-clash.json"
+                secret="$root/var/lib/skvpn/clash-secret"
+                run() {
+                  sed -e "s|/etc/sing-box|$root/etc/sing-box|g; s|/var/lib/skvpn|$root/var/lib/skvpn|g; s|chgrp sing-box|true|" "$1" >run.sh
+                  bash run.sh
+                }
+                fail() { echo "monitor script: $1"; exit 1; }
+
+                run "$scriptOn"
+                [ "$(stat -c %a "$secret")" = 600 ] || fail "the secret file is not root-only"
+                [ "$(stat -c %a "$api")" = 640 ] || fail "the base.d file is not group-readable only"
+                [ "$(wc -c <"$secret")" -ge 24 ] || fail "the secret is short"
+                grep -qE '^[A-Za-z0-9]+$' "$secret" || fail "the secret has characters a header can lose"
+                jq -e '.experimental.clash_api.external_controller == "127.0.0.1:19097"' "$api" >/dev/null || fail "the API is not on loopback at the option's port"
+                jq -e --rawfile s "$secret" '.experimental.clash_api.secret == $s' "$api" >/dev/null || fail "base.d holds a different secret than the secret file"
+                [ "$(ls -A "$root/etc/sing-box/base.d")" = 60-clash.json ] || fail "the run left a temporary file in base.d"
+
+                first=$(cat "$secret")
+                run "$scriptOn"
+                [ "$(cat "$secret")" = "$first" ] || fail "a restart made a new secret"
+
+                # Turned off, nothing of it may stay: a leftover file would open the API again
+                run "$scriptOff"
+                [ ! -e "$api" ] && [ ! -e "$secret" ] || fail "turning the option off left the API open"
                 touch $out
               '';
 
@@ -369,7 +440,8 @@
                 want 'keys == [
                   "dockerFollowBase", "enabledAlias", "enabledBase", "enabledBroken",
                   "enabledExtra", "enabledFirewall", "enabledGuardConfig", "enabledGuardUnit",
-                  "enabledRestore", "enabledSudo", "enabledTimer", "enabledTmpfiles",
+                  "enabledMeasureTimer", "enabledMeasureUnit", "enabledRestore", "enabledSudo",
+                  "enabledTemplateUnit", "enabledTimer", "enabledTmpfiles",
                   "hostStrictBroken", "hostStrictFirewall", "offAlias", "offBroken", "offEtc",
                   "offRestore", "offUser", "restoreOffPresent", "restoreOffTemplate",
                   "singBoxUserGroup", "syncthingFollowPostStart"
@@ -387,6 +459,11 @@
                 want '.enabledGuardUnit | test("ConditionPathExists=!/sys/class/net/skvpn-tun")' "the guard unit lost its running-profile condition"
                 want '.enabledGuardUnit | test("PATH=[^\n]*nftables")' "the guard unit has no nft on its PATH"
                 want '.enabledGuardUnit | test("ExecStartPost=")' "the guard unit lost its bypass rules"
+                want '.enabledMeasureUnit | test("Type=oneshot") and test("MemoryMax=256M") and test("TimeoutStartSec=15min")' "the measurement unit lost its limits"
+                want '.enabledMeasureUnit | test("ExecStart=[^\n]* measure --textfile /var/lib/collector/skvpn.prom")' "the measurement unit does not write the textfile"
+                want '.enabledMeasureUnit | test("PATH=[^\n]*curl")' "the measurement unit has no curl on its PATH"
+                want '.enabledMeasureTimer | test("OnUnitInactiveSec=1h") and test("OnBootSec=5min")' "the measurement timer is not counted from the end of a run"
+                want '.enabledTemplateUnit | test("ExecStartPre=\\+/nix/store/[^\n]*skvpn-clash-api")' "the template unit does not run the Clash API script as root"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"
                 want '.enabledFirewall == "loose"' "the reverse-path filter was not loosened"

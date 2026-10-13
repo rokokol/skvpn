@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Stands in for the curl that `skvpn measure` and the download key of `skvpn top` run. It
+# finds the exit a request is for through the socks5h proxy port, by the probe config the
+# sing-box stub kept; a request with no proxy is the one through the live tunnel, key
+# `tunnel`. FAKE_CURL gives each key 'TTFB:BYTES:TOTAL' ('HY2=0.2:5000000:1.2'), `fail`
+# for a refused connection, `partial` for a transfer cut at the time limit (exit 28 with
+# bytes) or `notfound` for an error page. Every call is logged to CURL_LOG as 'start KEY ARGS' and 'end KEY', after
+# a pause, so a test sees whether two downloads overlapped
+set -euo pipefail
+
+proxy=""
+format=""
+args=("$@")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -x | --proxy)
+      proxy="${2:?}"
+      shift 2
+      ;;
+    -w | --write-out)
+      format="${2:?}"
+      shift 2
+      ;;
+    -o | --output | -r | --range | -m | --max-time | --connect-timeout)
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+key=tunnel
+if [[ -n "$proxy" ]]; then
+  port="${proxy##*:}"
+  key=$(
+    python3 - "${SING_BOX_CONFIG:?}" "$port" <<'EOF'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    config = json.load(handle)
+tag = next(
+    i["tag"] for i in config["inbounds"] if i["type"] == "mixed" and i["listen_port"] == int(sys.argv[2])
+)
+print(next(r["outbound"] for r in config["route"]["rules"] if tag in r["inbound"]))
+EOF
+  )
+fi
+
+log="${CURL_LOG:?}"
+printf 'start %s %s\n' "$key" "${args[*]}" >>"$log"
+sleep 0.15
+printf 'end %s\n' "$key" >>"$log"
+
+answer=""
+IFS=, read -ra pairs <<<"${FAKE_CURL:-}"
+for pair in "${pairs[@]}"; do
+  [[ "${pair%%=*}" == "$key" ]] && answer="${pair#*=}"
+done
+if [[ -z "$answer" || "$answer" == fail ]]; then
+  echo "curl: (7) Failed to connect" >&2
+  exit 7
+fi
+
+status=0
+code=200
+if [[ "$answer" == partial ]]; then
+  answer=0.2:3000000:15
+  status=28
+elif [[ "$answer" == notfound ]]; then
+  # A page that is not the file: a body came back, and with it an error status
+  answer=0.2:512:0.3
+  code=404
+fi
+IFS=: read -r ttfb bytes total <<<"$answer"
+out="$format"
+out="${out//%\{http_code\}/$code}"
+out="${out//%\{time_starttransfer\}/$ttfb}"
+out="${out//%\{time_total\}/$total}"
+out="${out//%\{size_download\}/$bytes}"
+printf '%s' "$out"
+exit "$status"

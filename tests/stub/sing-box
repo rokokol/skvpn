@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Stands in for the probe sing-box that `skvpn ping` starts: keeps the config it was
-# handed in SING_BOX_CONFIG, then serves the Clash delay endpoint from FAKE_DELAYS
-# ('HY2=42,TROJAN-node=timeout'; a name it does not list answers 503) and appends every
-# request path to SING_BOX_LOG. SING_BOX_FAIL makes it refuse the config, the way a real
-# sing-box does with a broken one
+# Stands in for the probe sing-box that `skvpn ping` and `skvpn measure` start: keeps the
+# config it was handed in SING_BOX_CONFIG, then serves the Clash delay endpoint from
+# FAKE_DELAYS ('HY2=42,TROJAN-node=timeout'; a name it does not list answers 503) and
+# appends every request path to SING_BOX_LOG. SING_BOX_FAIL makes it refuse the config,
+# the way a real sing-box does with a broken one
+#
+# What `measure` asks of the probe is faked too. A `mixed` inbound only listens: the curl
+# stub answers for the traffic. A `direct` UDP inbound answers DNS queries like a resolver
+# behind the outbound its route rule names: FAKE_UDP ('HY2=drop,TROJAN-node=half') makes
+# one outbound lose every query or every second one, send the query back unanswered
+# (`echo`) or answer under the wrong id (`wrongid`), and an outbound it does not list
+# answers all. A live instance, for `skvpn top`, serves /traffic from FAKE_TRAFFIC
+# ('1000:5000,2000:6000', up:down per second; FAKE_TRAFFIC_HOLD keeps the stream open
+# after them) and wants the config's secret as a Bearer
 set -euo pipefail
 
 # `merge OUT ARGS…` is sing-box's own merge, which the suite does not reimplement: the
@@ -48,18 +57,74 @@ fi
 exec python3 - "$config" <<'EOF'
 import json
 import os
+import socket
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 with open(sys.argv[1]) as handle:
     config = json.load(handle)
-host, port = config["experimental"]["clash_api"]["external_controller"].rsplit(":", 1)
-tags = {outbound["tag"] for outbound in config["outbounds"]}
+clash = config["experimental"]["clash_api"]
+host, port = clash["external_controller"].rsplit(":", 1)
+secret = clash.get("secret")
+tags = {outbound["tag"] for outbound in config.get("outbounds", [])}
 delays = dict(
     item.split("=", 1) for item in os.environ.get("FAKE_DELAYS", "").split(",") if item
 )
+udp_modes = dict(
+    item.split("=", 1) for item in os.environ.get("FAKE_UDP", "").split(",") if item
+)
+traffic = [
+    item.split(":") for item in os.environ.get("FAKE_TRAFFIC", "").split(",") if item
+]
 log = os.environ.get("SING_BOX_LOG")
+
+# inbound tag -> outbound tag, from the route rules the way sing-box reads them
+routed = {}
+for rule in config.get("route", {}).get("rules", []):
+    for tag in rule.get("inbound", []):
+        routed[tag] = rule["outbound"]
+
+
+def udp_server(inbound):
+    mode = udp_modes.get(routed.get(inbound["tag"], ""), "ok")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((inbound["listen"], inbound["listen_port"]))
+    count = 0
+    while True:
+        data, peer = sock.recvfrom(512)
+        count += 1
+        if mode == "drop" or (mode == "half" and count % 2):
+            continue
+        # `echo` is the query sent back as it came, `wrongid` an answer to another query
+        if mode == "echo":
+            sock.sendto(data, peer)
+        elif mode == "wrongid":
+            sock.sendto(bytes([data[0] ^ 0xFF]) + data[1:2] + bytes([data[2] | 0x80]) + data[3:], peer)
+        else:
+            # A reply is the query with the response bit set
+            sock.sendto(data[:2] + bytes([data[2] | 0x80]) + data[3:], peer)
+
+
+def tcp_server(inbound):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((inbound["listen"], inbound["listen_port"]))
+    sock.listen()
+    while True:
+        sock.accept()[0].close()
+
+
+for inbound in config.get("inbounds", []):
+    if inbound["type"] == "direct":
+        target = udp_server
+    elif inbound["type"] == "mixed":
+        target = tcp_server
+    else:
+        continue
+    threading.Thread(target=target, args=(inbound,), daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -78,7 +143,22 @@ class Handler(BaseHTTPRequestHandler):
         if log:
             with open(log, "a") as handle:
                 handle.write(self.path + "\n")
+        if secret and self.headers.get("Authorization") != f"Bearer {secret}":
+            return self.answer(401, {"message": "Unauthorized"})
         url = urlparse(self.path)
+        if url.path == "/traffic":
+            # One object per line, then the connection closes: the end of the fake stream
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            for up, down in traffic:
+                self.wfile.write(json.dumps({"up": int(up), "down": int(down)}).encode() + b"\n")
+                self.wfile.flush()
+            # A real stream does not end; FAKE_TRAFFIC_HOLD keeps this one open for the
+            # test of a screen that has to stay up until a key is pressed
+            if os.environ.get("FAKE_TRAFFIC_HOLD"):
+                time.sleep(60)
+            return
         parts = url.path.split("/")
         if len(parts) != 4 or parts[1] != "proxies" or parts[3] != "delay":
             return self.answer(404, {"message": "not found"})

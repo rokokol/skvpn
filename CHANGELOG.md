@@ -4,6 +4,13 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 
 ## [Unreleased]
 
+### Added
+
+- `skvpn measure [--textfile PATH] [<name>…]` measures every profile without switching: TCP latency, time to the first byte and download speed of one bounded https file, and the round trip and loss of DNS queries over UDP. The downloads run one exit at a time. `--textfile` writes Prometheus metrics for node_exporter's textfile collector, replaced whole on every run, labelled by the profile name alone. `skvpn measure set <url>` picks the file. Needs `curl`
+- `measure.enable`, `measure.interval` and `measure.textfile` on NixOS run it on a timer as a root oneshot with a memory cap and a time limit, counted from the end of the last run
+- `skvpn top [--count N]` shows the speed through the running tunnel live, from sing-box's Clash API; `d` measures a download through the tunnel, and the screen says the monitor counts it too
+- `monitor.enable` on NixOS opens that API on loopback behind a secret made once and kept in a root-only file. Off by default; turning it on or off restarts the running tunnel once
+
 ### Changed
 
 - the DNS-over-TLS server behind the tunnel defaults to Cloudflare's `1.1.1.1` instead of Google's `8.8.8.8`, on NixOS (`dns.remoteServer`) and for the installer (`--dns-server`). Google forwards a part of the client address to the sites it resolves, and Cloudflare does not. A host that sets the server keeps it

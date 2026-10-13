@@ -4,6 +4,24 @@ Traps in sing-box and the tools around it that produce a plausible but wrong res
 
 ---
 
+## A Clash API on loopback without a secret is open to every local user
+
+**Where it bites:** the Clash API that `skvpn top` reads: `clashScript` in `nix/module.nix`, which writes `base.d/60-clash.json`, and `clash_api` in `skvpn.py`, which reads it back
+
+**Reproduction:** a config with `experimental.clash_api.external_controller` on `127.0.0.1` and no `secret`, run by sing-box 1.14.1, then from any account on the host
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE http://127.0.0.1:9097/connections
+```
+
+**Misleading result:** `204`. The API is bound to loopback, so it looks private, and nothing in the log shows who called
+
+**Mechanism:** loopback keeps off the network, not off the host's other users. The route closes every open connection, so the applications reconnect all at once and a bypass rule sees new flows; other routes read the connections and their destinations. With a `secret` the same call answers `401` unless the request carries `Authorization: Bearer <secret>`
+
+**Safe route:** write the API only with a secret from a root-only file, as the module does, and keep the file in `base.d` readable by the `sing-box` group alone. The secret cannot come from a Nix store path, which every user reads. `skvpn top` refuses an address that is not loopback before it sends the header
+
+---
+
 ## A process rule is a silent no-op without two capabilities
 
 **Where it bites:** the unit that runs a profile — `serviceConfig` in `nix/module.nix`, the drop-in `install.sh` writes beside the distribution's unit, and the fixture in `tests/distro.sh` that runs sing-box the way the unit would

@@ -9,16 +9,24 @@ import base64
 import ipaddress
 import json
 import os
+import queue
 import re
+import select
 import shutil
 import socket
+import statistics
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
+import threading
 import time
+import tty
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
@@ -50,6 +58,21 @@ DEFAULT_PING_URL = "https://www.google.com/generate_204"
 # reason: measured through the physical interface, not inside the active tunnel
 REDIRECT_MARK = 0x2024
 PING_TIMEOUT_MS = 5000
+# What `measure` downloads through each exit: https, because the probe's own delay test
+# takes nothing else, and bounded twice — in bytes by the range, in time by curl. The
+# default asks Cloudflare's speed endpoint for as many bytes as the range allows
+MEASURE_URL = CONF / "measure.url"
+MEASURE_BYTES = 10_000_000
+DEFAULT_MEASURE_URL = f"https://speed.cloudflare.com/__down?bytes={MEASURE_BYTES}"
+MEASURE_MAX_SECONDS = 15
+# The UDP half asks a public resolver the same question a few times through each exit
+UDP_RESOLVER = "1.1.1.1"
+UDP_QUERY_NAME = "example.com"
+UDP_QUERIES = 8
+# The suite shortens the wait for an answer that never comes
+UDP_TIMEOUT = float(os.environ.get("SKVPN_UDP_TIMEOUT", "2"))
+# Where `top` may send its secret: the Clash API of the live instance, on this host only
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 STAMP = ROOT / "var/lib/skvpn/last-sync"
 ACTIVE = ROOT / "var/lib/skvpn/active"
 # A profile pinned for boot by hand; without it boot follows ACTIVE, the last `up`
@@ -386,16 +409,19 @@ def redirect_mark():
     return REDIRECT_MARK
 
 
-def probe_config(names, port):
+def probe_config(names, port, listeners=None):
     """One throwaway sing-box: every asked profile as an outbound tagged with its name,
-    no inbounds, the Clash API on loopback to ask for delays."""
+    the Clash API on loopback to ask for delays. `ping` stops there and has no inbounds;
+    `measure` passes {name: (tcp_port, udp_port)} and gets a pair of loopback inbounds
+    per exit — a mixed one to carry a download, a direct one to carry DNS over UDP —
+    each routed to that exit alone."""
     outbounds = []
     for name in names:
         node = read_profile(name)
         if node is None:
             die(f"broken profile: {name}")
         outbounds.append({**node, "tag": name})
-    return {
+    config = {
         "log": {"level": "error"},
         # The system resolver, as the base's own bootstrap: it only ever resolves the
         # nodes' hostnames — the site's name travels to the node and is resolved there,
@@ -418,12 +444,38 @@ def probe_config(names, port):
         },
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{port}"}},
     }
+    if listeners:
+        config["inbounds"] = []
+        config["route"]["rules"] = []
+        for name, (tcp_port, udp_port) in listeners.items():
+            config["inbounds"] += [
+                {"type": "mixed", "tag": f"tcp-{name}", "listen": "127.0.0.1", "listen_port": tcp_port},
+                {
+                    "type": "direct",
+                    "tag": f"udp-{name}",
+                    "listen": "127.0.0.1",
+                    "listen_port": udp_port,
+                    "network": "udp",
+                    "override_address": UDP_RESOLVER,
+                    "override_port": 53,
+                },
+            ]
+            config["route"]["rules"].append(
+                {"inbound": [f"tcp-{name}", f"udp-{name}"], "action": "route", "outbound": name}
+            )
+    return config
 
 
-def free_port():
-    with socket.socket() as probe_socket:
-        probe_socket.bind(("127.0.0.1", 0))
-        return probe_socket.getsockname()[1]
+def free_ports(count):
+    """Distinct free loopback ports: all are held at once, so no two come out equal."""
+    held = [socket.socket() for _ in range(count)]
+    try:
+        for held_socket in held:
+            held_socket.bind(("127.0.0.1", 0))
+        return [held_socket.getsockname()[1] for held_socket in held]
+    finally:
+        for held_socket in held:
+            held_socket.close()
 
 
 def wait_for_port(proc, port, stderr_path):
@@ -458,19 +510,21 @@ def delay(port, name, url):
         return None
 
 
-def measure(names):
-    """{name: delay(...)} for every name, through one probe sing-box that lives only as
-    long as this call — the config carries node credentials, so it sits in a private
-    directory and goes with it."""
+@contextmanager
+def probe_instance(names, exits=False, prefix="skvpn-ping-"):
+    """A probe sing-box that lives only as long as the block — the config carries node
+    credentials, so it sits in a private directory and goes with it. Yields the Clash API
+    port and, with `exits`, the {name: (tcp_port, udp_port)} of each exit's inbounds."""
     binary = sing_box_binary()
-    url = ping_url()
-    port = free_port()
-    work = Path(tempfile.mkdtemp(prefix="skvpn-ping-"))
+    ports = free_ports(1 + 2 * len(names) if exits else 1)
+    port = ports[0]
+    listeners = {name: (ports[1 + 2 * i], ports[2 + 2 * i]) for i, name in enumerate(names)} if exits else None
+    work = Path(tempfile.mkdtemp(prefix=prefix))
     config = work / "config.json"
     stderr_path = work / "stderr"
     proc = None
     try:
-        write_private(config, json.dumps(probe_config(names, port)) + "\n", 0o600)
+        write_private(config, json.dumps(probe_config(names, port, listeners)) + "\n", 0o600)
         # A file, not a pipe: a chatty child would fill the pipe and hang the parent
         with open(stderr_path, "w") as stderr:
             proc = subprocess.Popen(
@@ -479,8 +533,7 @@ def measure(names):
                 stderr=stderr,
             )
         wait_for_port(proc, port, stderr_path)
-        with ThreadPoolExecutor(max_workers=min(16, len(names))) as pool:
-            return dict(zip(names, pool.map(lambda n: delay(port, n, url), names)))
+        yield (port, listeners) if exits else port
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -490,6 +543,14 @@ def measure(names):
                 proc.kill()
                 proc.wait()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def measure(names):
+    """{name: delay(...)} for every name, through one probe sing-box."""
+    url = ping_url()
+    with probe_instance(names) as port:
+        with ThreadPoolExecutor(max_workers=min(16, len(names))) as pool:
+            return dict(zip(names, pool.map(lambda n: delay(port, n, url), names)))
 
 
 def print_pings(results, servers=False):
@@ -506,6 +567,168 @@ def print_pings(results, servers=False):
 def take_flag(args, flag):
     """(present, args without it) — a flag that may sit anywhere among the names."""
     return flag in args, [arg for arg in args if arg != flag]
+
+
+# --- measure ----------------------------------------------------------------
+
+
+def measure_url():
+    return MEASURE_URL.read_text().strip() if MEASURE_URL.exists() else DEFAULT_MEASURE_URL
+
+
+def dns_query(query_id):
+    """A recursive A query for UDP_QUERY_NAME, the smallest question a resolver answers."""
+    labels = b"".join(bytes([len(label)]) + label.encode() for label in UDP_QUERY_NAME.split("."))
+    return struct.pack(">HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + labels + b"\0" + struct.pack(">HH", 1, 1)
+
+
+def udp_probe(port):
+    """(median round trip in seconds or None, share of queries unanswered) of UDP_QUERIES
+    DNS queries sent one at a time through an exit's direct inbound. A reply counts when
+    it carries the query's id and the response bit."""
+    rtts = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for query_id in range(1, UDP_QUERIES + 1):
+            query = dns_query(query_id)
+            sent = time.monotonic()
+            sock.sendto(query, ("127.0.0.1", port))
+            while time.monotonic() - sent < UDP_TIMEOUT:
+                sock.settimeout(UDP_TIMEOUT - (time.monotonic() - sent))
+                try:
+                    reply = sock.recv(512)
+                except OSError:
+                    break
+                if len(reply) > 2 and reply[:2] == query[:2] and reply[2] & 0x80:
+                    rtts.append(time.monotonic() - sent)
+                    break
+    return (statistics.median(rtts) if rtts else None), 1 - len(rtts) / UDP_QUERIES
+
+
+def download(url, proxy=None):
+    """{'ttfb': seconds, 'bps': bytes per second or None} of one bounded download by curl,
+    None when it failed. The speed is the bytes over the time after the first byte, so a
+    slow first byte does not read as a slow link. Cut off at the time limit with bytes in
+    hand, a download still counts: the limit is what bounds it. A proxy is a socks5h one,
+    which leaves the name to the exit; with none, the request takes the host's own route
+    and a proxy variable of the environment is not obeyed."""
+    curl = shutil.which("curl")
+    if curl is None:
+        die("curl not found")
+    command = [
+        curl,
+        "--silent",
+        "--output", "/dev/null",
+        "--max-time", str(MEASURE_MAX_SECONDS),
+        "--connect-timeout", "10",
+        "--range", f"0-{MEASURE_BYTES - 1}",
+        "--write-out", "%{http_code} %{time_starttransfer} %{time_total} %{size_download}",
+    ]
+    command += ["--proxy", proxy] if proxy else ["--noproxy", "*"]
+    command.append(url)
+    try:
+        run = subprocess.run(command, capture_output=True, text=True, check=False, timeout=MEASURE_MAX_SECONDS + 10)
+        code, ttfb, total, size = run.stdout.split()
+        ttfb, total, size = float(ttfb), float(total), int(size)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if run.returncode not in (0, 28) or code not in ("200", "206") or size <= 0:
+        return None
+    return {"ttfb": ttfb, "bps": size / (total - ttfb) if total > ttfb else None}
+
+
+def measure_exits(names):
+    """{name: {tcp, ttfb, bps, udp_rtt, udp_loss}} for every name, through one probe. The
+    delay and the DNS queries are light and run for all exits together; the download
+    fills the link, so one exit takes it at a time."""
+    ping, url = ping_url(), measure_url()
+    with probe_instance(names, exits=True, prefix="skvpn-measure-") as (port, listeners):
+        with ThreadPoolExecutor(max_workers=min(16, 2 * len(names))) as pool:
+            delays = pool.map(lambda n: delay(port, n, ping), names)
+            udps = pool.map(lambda n: udp_probe(listeners[n][1]), names)
+            delays, udps = list(delays), list(udps)
+        results = {}
+        for name, tcp, (udp_rtt, udp_loss) in zip(names, delays, udps):
+            got = download(url, f"socks5h://127.0.0.1:{listeners[name][0]}")
+            results[name] = {
+                "tcp": tcp,
+                "ttfb": got["ttfb"] if got else None,
+                "bps": got["bps"] if got else None,
+                "udp_rtt": udp_rtt,
+                "udp_loss": udp_loss,
+            }
+        return results
+
+
+# One row per metric: the name, what it says, and how a result gives the value (None
+# leaves the sample out, which is how Prometheus tells "unknown" from zero)
+METRICS = (
+    ("skvpn_exit_up", "1 when the exit carried a TCP request", lambda r: int(isinstance(r["tcp"], int) or r["ttfb"] is not None)),
+    ("skvpn_tcp_latency_seconds", "Time to the first header of a HEAD through the exit", lambda r: r["tcp"] / 1000 if isinstance(r["tcp"], int) else None),
+    ("skvpn_tcp_ttfb_seconds", "Time to the first byte of the download through the exit", lambda r: r["ttfb"]),
+    ("skvpn_tcp_download_bytes_per_second", "Download speed after the first byte", lambda r: r["bps"]),
+    ("skvpn_udp_up", "1 when at least one DNS query came back over UDP", lambda r: int(r["udp_rtt"] is not None)),
+    ("skvpn_udp_rtt_seconds", "Median round trip of the DNS queries answered over UDP", lambda r: r["udp_rtt"]),
+    ("skvpn_udp_loss_ratio", "Share of the DNS queries sent over UDP that got no answer", lambda r: r["udp_loss"]),
+)
+
+
+def prom_number(value):
+    return str(value) if isinstance(value, int) else format(value, ".9g")
+
+
+def render_metrics(results, timestamp, duration):
+    """Prometheus text for node_exporter's textfile collector. The label is the profile
+    name alone: nothing about the node itself belongs in a scrape."""
+    lines = []
+    for metric, text, value in METRICS:
+        samples = [(name, value(result)) for name, result in results.items()]
+        samples = [(name, v) for name, v in samples if v is not None]
+        lines += [f"# HELP {metric} {text}", f"# TYPE {metric} gauge"]
+        lines += [f'{metric}{{node="{name}"}} {prom_number(v)}' for name, v in samples]
+    lines += [
+        "# HELP skvpn_measure_timestamp_seconds Unix time the measurement finished",
+        "# TYPE skvpn_measure_timestamp_seconds gauge",
+        f"skvpn_measure_timestamp_seconds {int(timestamp)}",
+        "# HELP skvpn_measure_duration_seconds How long the whole measurement took",
+        "# TYPE skvpn_measure_duration_seconds gauge",
+        f"skvpn_measure_duration_seconds {prom_number(duration)}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_textfile(path, text):
+    """Whole or not at all: a collector that lists the directory mid-write must not read
+    half a file. The temporary file is in the same directory, so the rename cannot cross
+    a filesystem, and its name does not end in .prom, which the collector reads."""
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp is 0600, and the collector is another user; the file names profiles only
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
+
+
+def milliseconds(seconds):
+    return "-" if seconds is None else f"{seconds * 1000:.0f} ms"
+
+
+def print_measures(results):
+    active = running()
+    for name, result in results.items():
+        node = read_profile(name) or {"type": "?"}
+        tcp = f"{result['tcp']} ms" if isinstance(result["tcp"], int) else result["tcp"] or "unreachable"
+        speed = "-" if result["bps"] is None else f"{result['bps'] * 8 / 1e6:.1f} Mbit/s"
+        extra = (
+            f"tcp {tcp}  first byte {milliseconds(result['ttfb'])}  down {speed}  "
+            f"udp {milliseconds(result['udp_rtt'])}, {result['udp_loss'] * 100:.0f}% loss"
+        )
+        print(profile_line(name, node, active, extra))
 
 
 # --- subscription -----------------------------------------------------------
@@ -1041,6 +1264,56 @@ def cmd_ping(args):
     print_pings(measure(names), servers)
 
 
+def cmd_measure(args):
+    """Latency, time to first byte, download speed and UDP round trip and loss through
+    every profile — or the named ones — by the same kind of throwaway sing-box `ping`
+    starts. With --textfile the numbers go to a node_exporter textfile instead of the
+    screen. `set` is reserved for the download target, as it is for ping's."""
+    need_root()
+    if args[:1] == ["set"]:
+        url = args[1] if len(args) == 2 else ""
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            die("usage: skvpn measure set <https url of a file of at least a few megabytes>")
+        CONF.mkdir(parents=True, exist_ok=True)
+        write_private(MEASURE_URL, url + "\n", 0o644)
+        print(f"  stored  {url}")
+        return
+    textfile = None
+    names = []
+    rest = iter(args)
+    for arg in rest:
+        if arg == "--textfile":
+            textfile = next(rest, None)
+            if not textfile:
+                die("usage: skvpn measure [--textfile PATH] [<name>…]")
+            textfile = Path(textfile)
+        elif arg.startswith("-"):
+            die("usage: skvpn measure [--textfile PATH] [<name>…]")
+        else:
+            names.append(slug(arg))
+    names = names or profile_names()
+    # On a timer the textfile is the answer even with nothing to measure: it must also
+    # clear the samples of a profile that is gone, and a red unit would say nothing more
+    if not names and textfile is None:
+        die("no profiles")
+    for name in names:
+        if not profile_path(name).exists():
+            die(f"no such profile: {name}")
+    if textfile is not None and not textfile.parent.is_dir():
+        die(f"no such directory: {textfile.parent}")
+    started = time.monotonic()
+    results = measure_exits(names) if names else {}
+    if textfile is None:
+        print_measures(results)
+        return
+    try:
+        write_textfile(textfile, render_metrics(results, time.time(), time.monotonic() - started))
+    except OSError as exc:
+        die(f"cannot write {textfile}: {exc}")
+    print(f"  wrote  {textfile}")
+
+
 def cmd_status(args):
     servers, args = take_flag(args, "--servers")
     if args not in ([], ["--ping"]) or (servers and not args):
@@ -1061,6 +1334,183 @@ def cmd_status(args):
     if args and profile_names():
         print()
         print_pings(measure(profile_names()), servers)
+
+
+# --- top --------------------------------------------------------------------
+
+
+def clash_api():
+    """(address, secret) of the Clash API the live base opens, read from the base itself:
+    the file is what the running sing-box was started with. None when it opens none."""
+    if not BASE_D.is_dir():
+        return None
+    for path in sorted(BASE_D.glob("*.json")):
+        try:
+            api = json.loads(path.read_text())["experimental"]["clash_api"]
+            if api["external_controller"]:
+                return api["external_controller"], api.get("secret", "")
+        except (OSError, ValueError, LookupError, TypeError):
+            continue
+    return None
+
+
+def scaled(value):
+    for unit, size in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if value >= size:
+            return f"{value / size:.1f} {unit}"
+    return f"{value:.0f} B"
+
+
+def traffic_stream(address, secret, events):
+    """Feeds ('sample', up, down) per second from the Clash API's /traffic into `events`,
+    then a final ('error', why): the stream has no end of its own but a failure."""
+    headers = {"Authorization": f"Bearer {secret}"} if secret else {}
+    # Loopback, so an http_proxy in the environment must not get in the way
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(urllib.request.Request(f"http://{address}/traffic", headers=headers), timeout=10) as resp:
+            for line in resp:
+                sample = json.loads(line)
+                events.put(("sample", int(sample["up"]), int(sample["down"])))
+        events.put(("error", "the Clash API closed the stream — did the tunnel restart?"))
+    except urllib.error.HTTPError as exc:
+        hint = " — the secret in base.d is not the one the running sing-box has, restart the tunnel" if exc.code == 401 else ""
+        events.put(("error", f"the Clash API answered {exc.code}{hint}"))
+    except (OSError, ValueError, LookupError, TypeError) as exc:
+        events.put(("error", f"the Clash API stream failed: {exc}"))
+
+
+def tunnel_download(events):
+    """The download key: the measure target by the host's own route, which is the live
+    tunnel — the one place a download goes through it on purpose."""
+    got = download(measure_url())
+    if got is None or got["bps"] is None:
+        events.put(("download", "failed"))
+    else:
+        events.put(("download", f"{got['bps'] * 8 / 1e6:.1f} Mbit/s, first byte {milliseconds(got['ttfb'])}"))
+
+
+def spark(values):
+    top = max(values, default=0)
+    return "".join("▁▂▃▄▅▆▇█"[min(7, int(7 * v / top))] if top else "▁" for v in values)
+
+
+def draw_top(state):
+    lines = [
+        f"skvpn top  {state['profile']}",
+        "",
+        f"  rx  {scaled(state['down'])}/s   peak {scaled(state['peak_down'])}/s",
+        f"  tx  {scaled(state['up'])}/s   peak {scaled(state['peak_up'])}/s",
+        "",
+        f"  {spark(state['history'])}",
+        "",
+        f"  total  rx {scaled(state['total_down'])}  tx {scaled(state['total_up'])}  in {state['seconds']} s",
+        "",
+        "  d  measure download speed through the tunnel (the monitor counts that download too)",
+        "  q  quit",
+    ]
+    if state["download"]:
+        lines += ["", f"  download  {state['download']}"]
+    # Home, then every line cleared to its end, then what is left of the screen
+    sys.stdout.write("\x1b[H" + "".join(f"{line}\x1b[K\n" for line in lines) + "\x1b[J")
+    sys.stdout.flush()
+
+
+def top_screen(events, profile):
+    """The live view: redrawn on each sample and key. Returns the error that ended it,
+    None for q."""
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    state = {
+        "profile": profile,
+        "up": 0,
+        "down": 0,
+        "peak_up": 0,
+        "peak_down": 0,
+        "total_up": 0,
+        "total_down": 0,
+        "seconds": 0,
+        "history": [],
+        "download": "",
+    }
+    failure = None
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        draw_top(state)
+        while failure is None:
+            dirty = False
+            if select.select([fd], [], [], 0.2)[0]:
+                key = os.read(fd, 1)
+                if key == b"q":
+                    return None
+                if key == b"d" and not state["download"].startswith("running"):
+                    state["download"] = "running… the monitor counts it in rx"
+                    threading.Thread(target=tunnel_download, args=(events,), daemon=True).start()
+                    dirty = True
+            while True:
+                try:
+                    event = events.get_nowait()
+                except queue.Empty:
+                    break
+                dirty = True
+                if event[0] == "sample":
+                    _, up, down = event
+                    state.update(up=up, down=down, seconds=state["seconds"] + 1)
+                    state["peak_up"], state["peak_down"] = max(state["peak_up"], up), max(state["peak_down"], down)
+                    state["total_up"] += up
+                    state["total_down"] += down
+                    state["history"] = (state["history"] + [down])[-60:]
+                elif event[0] == "download":
+                    state["download"] = event[1]
+                else:
+                    failure = event[1]
+            if dirty:
+                draw_top(state)
+        return failure
+    finally:
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def cmd_top(args):
+    """Live rx and tx speed through the tunnel, from the Clash API of the running
+    sing-box. On a terminal it is a screen with a download key; piped it prints one line
+    per second, and `--count N` stops after N of them."""
+    need_root()
+    count = None
+    if args[:1] == ["--count"] and len(args) == 2 and args[1].isdigit() and int(args[1]) > 0:
+        count = int(args[1])
+    elif args:
+        die("usage: skvpn top [--count N]")
+    api = clash_api()
+    if api is None:
+        die("the live base opens no Clash API — turn on services.skvpn.monitor.enable and restart the tunnel once")
+    address, secret = api
+    # The secret goes in a header: an API anywhere but here would carry it off the host
+    if address.rsplit(":", 1)[0] not in LOOPBACK_HOSTS:
+        die(f"the Clash API listens on {address}, not on loopback — refusing to send the secret there")
+    events = queue.Queue()
+    threading.Thread(target=traffic_stream, args=(address, secret, events), daemon=True).start()
+    try:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            failure = top_screen(events, running() or "no profile")
+            if failure:
+                die(failure)
+            return
+        seen = 0
+        while True:
+            event = events.get()
+            if event[0] == "error":
+                die(event[1])
+            print(f"rx {scaled(event[2])}/s  tx {scaled(event[1])}/s", flush=True)
+            seen += 1
+            if count is not None and seen >= count:
+                return
+    except KeyboardInterrupt:
+        # Ctrl-C is how a piped run ends, and the screen has put the terminal back by now
+        return
 
 
 # --- export -----------------------------------------------------------------
@@ -1330,6 +1780,8 @@ COMMANDS = {
     "boot": cmd_boot,
     "split": cmd_split,
     "ping": cmd_ping,
+    "measure": cmd_measure,
+    "top": cmd_top,
     "status": cmd_status,
     "export": cmd_export,
 }

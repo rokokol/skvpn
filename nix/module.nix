@@ -166,6 +166,42 @@ let
     };
   };
 
+  # The Clash API file for `skvpn top`, written at every start by root. It cannot be an
+  # etc entry: the secret would sit in the world-readable store. The secret lives in a
+  # root-only file and is made once; base.d gets a copy only the sing-box group reads, and
+  # a rename puts it in place whole. With the option off the script removes both, or a
+  # file from the time it was on would open the API again
+  clashFile = "/etc/sing-box/base.d/60-clash.json";
+  clashSecret = "/var/lib/skvpn/clash-secret";
+  clashScript = pkgs.writeShellScript "skvpn-clash-api" ''
+    set -euo pipefail
+    export PATH=${
+      lib.makeBinPath [
+        pkgs.coreutils
+        pkgs.jq
+      ]
+    }
+    ${
+      if cfg.monitor.enable then
+        ''
+          umask 077
+          install -d -m 0755 /var/lib/skvpn
+          [ -s ${clashSecret} ] || head -c 24 /dev/urandom | base64 | tr -d '=+/\n' >${clashSecret}
+          # A hidden name without the .json suffix, which sing-box does not read
+          temp=$(mktemp /etc/sing-box/base.d/.60-clash.XXXXXX)
+          jq -n --arg controller 127.0.0.1:${toString cfg.monitor.port} --rawfile secret ${clashSecret} \
+            '{experimental: {clash_api: {external_controller: $controller, secret: $secret}}}' >"$temp"
+          chgrp sing-box "$temp"
+          chmod 0640 "$temp"
+          mv -f "$temp" ${clashFile}
+        ''
+      else
+        ''
+          rm -f ${clashFile} ${clashSecret}
+        ''
+    }
+  '';
+
   # What a profile instance and the guard share; only the config and state paths differ
   singBoxService = {
     after = [
@@ -195,6 +231,8 @@ let
         "CAP_SYS_PTRACE"
         "CAP_DAC_READ_SEARCH"
       ];
+      # The + runs it as root whatever User says: it writes under /etc and /var/lib
+      ExecStartPre = "+${clashScript}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       Restart = "on-failure";
       RestartSec = "10s";
@@ -622,6 +660,55 @@ in
       description = "systemd OnCalendar for refreshing profiles from the stored subscription";
     };
 
+    measure = {
+      enable = lib.mkEnableOption "" // {
+        description = ''
+          Measure every profile on a timer, as `skvpn measure` does: latency, time to the
+          first byte and download speed over TCP, round trip and loss over UDP. Each run
+          downloads a bounded file through every exit, one exit at a time, so it costs that
+          traffic on every run
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "1h";
+        description = ''
+          How long after one measurement ends the next one starts, as a systemd time span.
+          Counted from the end, so a slow run never overlaps the next
+        '';
+      };
+
+      textfile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/var/lib/prometheus-node-exporter-text-files/skvpn.prom";
+        description = ''
+          A file for node_exporter's textfile collector, replaced whole on every run. The
+          directory must exist and the collector must read it. Null prints the table to the
+          journal instead
+        '';
+      };
+    };
+
+    monitor = {
+      enable = lib.mkEnableOption "" // {
+        description = ''
+          Open sing-box's Clash API on loopback, which `skvpn top` reads for the live speed
+          through the tunnel. The API needs the secret it is opened with: without one, any
+          local user could delete connections and so reset the network. The secret is made
+          once, kept in a file only root reads, and written into `base.d` for sing-box. Turning
+          this on or off restarts the running tunnel once, as any change to the base does
+        '';
+      };
+
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 9097;
+        description = "Loopback port of the Clash API";
+      };
+    };
+
     trustedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -758,6 +845,42 @@ in
         OnCalendar = cfg.sync.interval;
         Persistent = true;
         RandomizedDelaySec = "1h";
+      };
+    };
+
+    # Root, because the profiles carry the nodes' credentials. A oneshot counted from its
+    # own end, so one slow run cannot overlap the next; the limits keep the probe sing-box
+    # and a stuck download from outliving a sane measurement
+    systemd.services.skvpn-measure = lib.mkIf cfg.measure.enable {
+      description = "Measure speed and UDP loss through every sing-box profile";
+
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+
+      path = [ pkgs.curl ];
+      environment.SKVPN_SING_BOX = lib.getExe cfg.singBoxPackage;
+
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart =
+          "${lib.getExe cfg.package} measure"
+          + lib.optionalString (
+            cfg.measure.textfile != null
+          ) " --textfile ${lib.escapeShellArg cfg.measure.textfile}";
+        MemoryMax = "256M";
+        TimeoutStartSec = "15min";
+        Nice = 10;
+        PrivateTmp = true;
+        ProtectHome = true;
+        NoNewPrivileges = true;
+      };
+    };
+
+    systemd.timers.skvpn-measure = lib.mkIf cfg.measure.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "5min";
+        OnUnitInactiveSec = cfg.measure.interval;
       };
     };
 

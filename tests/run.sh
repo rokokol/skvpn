@@ -81,6 +81,16 @@ world() {
   unset SYSTEMCTL_FAIL
   unset FAKE_DELAYS
   unset SING_BOX_FAIL
+  # What `measure` and `top` add: the curl stub's log and its answers, the UDP resolver
+  # behind each exit, and the live instance's traffic stream
+  export CURL_LOG="$SKVPN_ROOT/curl.log"
+  : >"$CURL_LOG"
+  unset FAKE_CURL
+  unset FAKE_UDP
+  unset FAKE_TRAFFIC
+  unset FAKE_TRAFFIC_HOLD
+  # A query nobody answers would hold a case for the production wait on each of them
+  export SKVPN_UDP_TIMEOUT=0.3
   # An override exported in the developer's shell would reach past the stub unnoticed
   unset SKVPN_SING_BOX
 }
@@ -951,6 +961,447 @@ if [[ "$with_ping" == *"  profile   HY2"* && "$with_ping" == *"* HY2"*"42 ms"* &
   ok
 else
   fail "status --ping missed the table, or a plain status started a probe"
+fi
+
+echo "measure"
+
+# The value of one sample in a textfile: metric FILE NAME [NODE]
+metric() {
+  local want="$2"
+  [[ -z "${3:-}" ]] || want="$2{node=\"$3\"}"
+  awk -v want="$want" '$1 == want { print $2 }' "$1"
+}
+# Numeric equality, and false for an empty side: awk reads nothing as 0
+near() {
+  [[ -n "$1" && -n "$2" ]] && awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; exit !(d < 1e-9 && d > -1e-9) }'
+}
+measure_dirs() { find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'skvpn-measure-*' 2>/dev/null | wc -l; }
+
+# The ping probe grows a pair of inbounds per exit: a mixed one for the curl through the
+# exit, a direct UDP one for the DNS queries, each routed to that exit alone. Loopback
+# only, every port its own
+world measure-probes-each-exit-through-its-own-inbounds
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=42'
+export FAKE_CURL='HY2=0.2:5000000:1.2,TROJAN-node=0.3:5000000:1.3'
+tmp_before=$(measure_dirs)
+sv measure >/dev/null
+tmp_after=$(measure_dirs)
+if jq -e '. as $c | ($c.outbounds | map(.tag) | sort) == ["HY2", "TROJAN-node"] and
+  all($c.outbounds[].tag; . as $t |
+    [$c.route.rules[] | select(.outbound == $t) | .inbound[]] as $in |
+    ($in | length) == 2 and
+    ([$c.inbounds[] | select(.tag as $g | $in | index($g)) | .type] | sort) == ["direct", "mixed"])' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.inbounds | length == 4 and all(.listen == "127.0.0.1")' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '[.inbounds[].listen_port, (.experimental.clash_api.external_controller | split(":")[1] | tonumber)] | (unique | length) == length' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.inbounds | map(select(.type == "direct")) | all(.network == "udp" and .override_port == 53 and (.override_address | length > 0))' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.route.rules | all(.action == "route")' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.route.default_mark == 8228 and .route.auto_detect_interface == true' "$SING_BOX_CONFIG" >/dev/null &&
+  jq -e '.dns == {"servers": [{"tag": "bootstrap", "type": "local"}], "final": "bootstrap", "strategy": "ipv4_only"}' "$SING_BOX_CONFIG" >/dev/null &&
+  [[ "$tmp_before" == "$tmp_after" ]]; then
+  ok
+else
+  fail "an exit lacks its own inbound pair, an inbound is off loopback or shares a port, the probe lost its mark, or it left a directory behind"
+fi
+
+# The real sing-box parses the inbounds and rules. check proves only that: a throwaway
+# run of the same shape against a dummy outbound is in PITFALLS.md's company
+world measure-config-passes-the-real-sing-box
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+sv measure >/dev/null
+real=$(type -ap sing-box | grep -v -x -F "$HERE/stub/sing-box" | head -n 1 || true)
+if [[ -z "$real" ]]; then
+  fail "no real sing-box on PATH after the stub"
+elif err=$("$real" check -c "$SING_BOX_CONFIG" 2>&1); then
+  ok
+else
+  fail "the real sing-box refused the measure probe: $err"
+fi
+
+# TTFB and throughput come from one request through the exit's mixed port; the speed
+# is the bytes over the time after the first byte, so a slow first byte is not a slow link
+world measure-textfile-carries-every-metric
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=timeout'
+export FAKE_CURL='HY2=0.2:5000000:1.2'
+export FAKE_UDP='TROJAN-node=drop'
+prom="$SKVPN_ROOT/out/skvpn.prom"
+mkdir -p "$SKVPN_ROOT/out"
+before=$(date +%s)
+sv measure --textfile "$prom" >/dev/null
+after=$(date +%s)
+if near "$(metric "$prom" skvpn_exit_up HY2)" 1 &&
+  near "$(metric "$prom" skvpn_tcp_latency_seconds HY2)" 0.042 &&
+  near "$(metric "$prom" skvpn_tcp_ttfb_seconds HY2)" 0.2 &&
+  near "$(metric "$prom" skvpn_tcp_download_bytes_per_second HY2)" 5000000 &&
+  near "$(metric "$prom" skvpn_udp_up HY2)" 1 &&
+  [[ -n "$(metric "$prom" skvpn_udp_rtt_seconds HY2)" ]] &&
+  near "$(metric "$prom" skvpn_udp_loss_ratio HY2)" 0 &&
+  near "$(metric "$prom" skvpn_exit_up TROJAN-node)" 0 &&
+  near "$(metric "$prom" skvpn_udp_up TROJAN-node)" 0 &&
+  near "$(metric "$prom" skvpn_udp_loss_ratio TROJAN-node)" 1 &&
+  [[ -z "$(metric "$prom" skvpn_tcp_latency_seconds TROJAN-node)" ]] &&
+  [[ -z "$(metric "$prom" skvpn_tcp_ttfb_seconds TROJAN-node)" ]] &&
+  [[ -z "$(metric "$prom" skvpn_tcp_download_bytes_per_second TROJAN-node)" ]] &&
+  [[ -z "$(metric "$prom" skvpn_udp_rtt_seconds TROJAN-node)" ]] &&
+  [[ "$(metric "$prom" skvpn_measure_timestamp_seconds)" -ge "$before" && "$(metric "$prom" skvpn_measure_timestamp_seconds)" -le "$after" ]] &&
+  [[ -n "$(metric "$prom" skvpn_measure_duration_seconds)" ]] &&
+  grep -q '^# TYPE skvpn_exit_up gauge$' "$prom" && grep -q '^# HELP skvpn_udp_rtt_seconds ' "$prom"; then
+  ok
+else
+  fail "a metric is missing, wrong, or present for an exit that could not produce it"
+fi
+
+# Only the profile name labels a sample: a node's address and credentials are what a
+# profile keeps private, and a scrape lands on a dashboard
+world measure-metrics-name-the-profile-only
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+prom="$SKVPN_ROOT/skvpn.prom"
+sv measure --textfile "$prom" >/dev/null
+labels=$(grep -o '{[^}]*}' "$prom" | sort -u)
+if [[ "$labels" == '{node="HY2"}' ]] && ! grep -qE 'node\.example\.com|obfspass|secret|salamander' "$prom"; then
+  ok
+else
+  fail "a sample carries a label beyond the profile name, or a node detail"
+fi
+
+world measure-udp-loss-is-the-share-of-unanswered-queries
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2' FAKE_UDP='HY2=half'
+prom="$SKVPN_ROOT/skvpn.prom"
+sv measure --textfile "$prom" >/dev/null
+if near "$(metric "$prom" skvpn_udp_loss_ratio HY2)" 0.5 && near "$(metric "$prom" skvpn_udp_up HY2)" 1; then
+  ok
+else
+  fail "half the queries went unanswered and the loss ratio is not one half"
+fi
+
+# A datagram that is not the answer to the query asked is no answer: the query sent back
+# whole, or an answer under another id, may be a stale reply or a reflection
+world measure-udp-counts-only-answers-to-its-own-query
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=42' FAKE_CURL='HY2=0.2:5000000:1.2,TROJAN-node=0.2:5000000:1.2'
+export FAKE_UDP='HY2=echo,TROJAN-node=wrongid'
+prom="$SKVPN_ROOT/skvpn.prom"
+sv measure --textfile "$prom" >/dev/null
+if near "$(metric "$prom" skvpn_udp_loss_ratio HY2)" 1 && near "$(metric "$prom" skvpn_udp_up HY2)" 0 &&
+  near "$(metric "$prom" skvpn_udp_loss_ratio TROJAN-node)" 1 && near "$(metric "$prom" skvpn_udp_up TROJAN-node)" 0; then
+  ok
+else
+  fail "a reflected query or an answer under another id counted as an answer"
+fi
+
+# A download cut at the time limit with bytes in hand is still a measurement of the link
+# (the limit is what bounds it); an error page is not a measurement of anything
+world measure-counts-a-cut-download-and-not-an-error-page
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=42'
+export FAKE_CURL='HY2=partial,TROJAN-node=notfound'
+prom="$SKVPN_ROOT/skvpn.prom"
+sv measure --textfile "$prom" >/dev/null
+# 3 000 000 bytes between the first byte at 0.2 s and the cut at 15 s
+if near "$(metric "$prom" skvpn_tcp_download_bytes_per_second HY2)" "$(awk 'BEGIN { printf "%.9g", 3000000 / 14.8 }')" &&
+  [[ -z "$(metric "$prom" skvpn_tcp_download_bytes_per_second TROJAN-node)" ]] &&
+  [[ -z "$(metric "$prom" skvpn_tcp_ttfb_seconds TROJAN-node)" ]]; then
+  ok
+else
+  fail "a cut download was dropped, or an error page was taken for a download"
+fi
+
+# Throughput is the one measurement that saturates the link, so two exits never share it
+world measure-downloads-run-one-at-a-time
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=42'
+export FAKE_CURL='HY2=0.2:5000000:1.2,TROJAN-node=0.3:5000000:1.3'
+sv measure >/dev/null
+order=$(awk '{ print $1 }' "$CURL_LOG" | paste -sd' ' -)
+if [[ "$order" == "start end start end" ]]; then
+  ok
+else
+  fail "downloads overlapped or never ran: $order"
+fi
+
+# The request is curl through the exit's socks5h port, so the name is the exit's to
+# resolve; the target is https, bounded in bytes and in time
+world measure-request-is-bounded-and-https
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+sv measure >/dev/null
+request=$(grep '^start HY2 ' "$CURL_LOG")
+if [[ "$request" == *"socks5h://127.0.0.1:"* && "$request" == *" https://"* &&
+  "$request" == *"--max-time"* && "$request" == *"--range 0-"* && "$request" != *node.example.com* ]]; then
+  ok
+else
+  fail "the download is not socks5h, https, and bounded: $request"
+fi
+
+world measure-set-stores-an-https-target-and-curl-gets-it
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+url_file="$SKVPN_ROOT/etc/sing-box/measure.url"
+sv measure set https://files.example.org/blob.bin >/dev/null
+stored=$(<"$url_file")
+sv measure >/dev/null
+if [[ "$stored" == "https://files.example.org/blob.bin" ]] &&
+  grep -q '^start HY2 .* https://files.example.org/blob.bin$' "$CURL_LOG" &&
+  ! sv measure set 'http://x/f' >/dev/null 2>&1 &&
+  ! sv measure set example.org >/dev/null 2>&1 &&
+  ! sv measure set >/dev/null 2>&1; then
+  ok
+else
+  fail "measure set stored the wrong target, or took one that is not an https url"
+fi
+
+# A reader of the textfile directory must never meet half a file, and a failed run must
+# not wipe the last good one
+world measure-textfile-is-written-atomically
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+dir="$SKVPN_ROOT/collector"
+mkdir -p "$dir"
+printf 'stale\n' >"$dir/skvpn.prom"
+inode_before=$(stat -c %i "$dir/skvpn.prom")
+sv measure --textfile "$dir/skvpn.prom" >/dev/null
+inode_after=$(stat -c %i "$dir/skvpn.prom")
+fresh=$(<"$dir/skvpn.prom")
+mode=$(stat -c %a "$dir/skvpn.prom")
+leftovers=$(find "$dir" -type f ! -name skvpn.prom | wc -l)
+printf 'last-good\n' >"$dir/skvpn.prom"
+export SING_BOX_FAIL=1
+if sv measure --textfile "$dir/skvpn.prom" >/dev/null 2>&1; then
+  fail "measure exited 0 with a probe that refused its config"
+elif [[ "$fresh" == *skvpn_exit_up* && "$mode" == 644 && "$leftovers" == 0 && "$inode_before" != "$inode_after" &&
+  "$(<"$dir/skvpn.prom")" == last-good && "$(find "$dir" -type f | wc -l)" == 1 ]]; then
+  ok
+else
+  fail "the textfile was not replaced whole, was left with a temp file, or a failed run damaged it"
+fi
+
+# A write that fails half way — here the target is a directory, so the rename cannot
+# land — leaves the collector's directory as it was
+world measure-textfile-failure-leaves-no-temporary-file
+sv add "$HY2" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+dir="$SKVPN_ROOT/collector"
+mkdir -p "$dir/skvpn.prom"
+if sv measure --textfile "$dir/skvpn.prom" >/dev/null 2>&1; then
+  fail "measure exited 0 although the textfile could not be written"
+elif [[ "$(find "$dir" -mindepth 1 -maxdepth 1 | wc -l)" == 1 ]]; then
+  ok
+else
+  fail "a failed write left a temporary file in the collector's directory"
+fi
+
+world measure-human-output-without-the-flag
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42,TROJAN-node=timeout' FAKE_CURL='HY2=0.2:5000000:1.2' FAKE_UDP='TROJAN-node=drop'
+out=$(sv measure)
+hy2_row=$(grep ' HY2 ' <<<"$out")
+trojan_row=$(grep ' TROJAN-node ' <<<"$out")
+if [[ "$hy2_row" == *"42 ms"* && "$hy2_row" == *"40.0 Mbit/s"* && "$hy2_row" == *"200 ms"* &&
+  "$hy2_row" == *"0% loss"* && "$trojan_row" == *"timeout"* && "$trojan_row" == *"100% loss"* &&
+  "$out" != *node.example.com* ]]; then
+  ok
+else
+  fail "the table misses a measurement or shows a node address: $out"
+fi
+
+world measure-names-only-the-asked-profiles-and-refuses-a-bad-call
+sv add "$HY2" "$TROJAN" >/dev/null
+export FAKE_DELAYS='HY2=42' FAKE_CURL='HY2=0.2:5000000:1.2'
+sv measure HY2 >/dev/null
+only=$(jq -c '.outbounds | map(.tag)' "$SING_BOX_CONFIG")
+rm -f "$SING_BOX_CONFIG"
+if [[ "$only" == '["HY2"]' ]] &&
+  ! sv measure nope >/dev/null 2>&1 && [[ ! -e $SING_BOX_CONFIG ]] &&
+  ! sv measure --textfile "$SKVPN_ROOT/missing-dir/x.prom" >/dev/null 2>&1 &&
+  ! sv measure --textfile >/dev/null 2>&1 &&
+  [[ ! -e $SING_BOX_CONFIG ]]; then
+  ok
+else
+  fail "measure probed more than it was asked for, or took a call it should refuse"
+fi
+
+# The timer runs this before any subscription is synced, and after the last profile goes:
+# no exits is a measurement of nothing, not a failed unit — and it clears the old samples
+world measure-textfile-with-no-profiles-is-an-empty-measurement
+prom="$SKVPN_ROOT/skvpn.prom"
+printf 'skvpn_exit_up{node="GONE"} 1\n' >"$prom"
+if sv measure --textfile "$prom" >/dev/null 2>&1 && [[ ! -e $SING_BOX_CONFIG ]] &&
+  ! grep -q 'node=' "$prom" && [[ -n "$(metric "$prom" skvpn_measure_timestamp_seconds)" ]] &&
+  ! sv measure >/dev/null 2>&1; then
+  ok
+else
+  fail "no profiles failed the textfile run, started a probe, kept a sample of a profile that is gone, or passed on the screen"
+fi
+
+world measure-reports-a-probe-that-refuses-to-start
+sv add "$HY2" >/dev/null
+export SING_BOX_FAIL=1
+if out=$(sv measure 2>&1); then
+  fail "measure exited 0 with a probe that refused its config"
+elif [[ "$out" == *refused* ]]; then
+  ok
+else
+  fail "measure hid why the probe did not start"
+fi
+
+echo "top"
+
+# A live instance for `top` to read: the sing-box stub started from the config the module
+# writes into base.d, a secret in it. clash_base_file PORT SECRET writes that file
+clash_base_file() {
+  mkdir -p "$SKVPN_ROOT/etc/sing-box/base.d"
+  jq -n --arg controller "$1" --arg secret "$2" \
+    '{experimental: {clash_api: {external_controller: $controller, secret: $secret}}}' \
+    >"$SKVPN_ROOT/etc/sing-box/base.d/60-clash.json"
+}
+LIVE_PID=""
+live_stop() {
+  if [[ -n "$LIVE_PID" ]]; then
+    kill "$LIVE_PID" 2>/dev/null || true
+    wait "$LIVE_PID" 2>/dev/null || true
+    LIVE_PID=""
+  fi
+}
+trap 'live_stop; rm -rf "$WORK"' EXIT
+# live_start SECRET — the stub on a free port with that secret; sets LIVE_PORT
+live_start() {
+  LIVE_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  jq -n --arg controller "127.0.0.1:$LIVE_PORT" --arg secret "$1" \
+    '{experimental: {clash_api: {external_controller: $controller, secret: $secret}}}' \
+    >"$SKVPN_ROOT/live.json"
+  SING_BOX_CONFIG="$SKVPN_ROOT/live-copy.json" sing-box -c "$SKVPN_ROOT/live.json" run >/dev/null 2>&1 &
+  LIVE_PID=$!
+  for _ in $(seq 50); do
+    (exec 3<>"/dev/tcp/127.0.0.1/$LIVE_PORT") 2>/dev/null && return
+    sleep 0.1
+  done
+  fail "the live stub never listened"
+}
+
+world top-prints-one-line-per-second-of-the-stream
+export FAKE_TRAFFIC='1000:5000,2000:6000,3000:7000'
+live_start s3cret
+clash_base_file "127.0.0.1:$LIVE_PORT" s3cret
+out=$(sv top --count 3 2>&1) || true
+live_stop
+if [[ "$(grep -c '^rx ' <<<"$out")" == 3 && "$out" == *"rx 6.0 kB/s"*"tx 2.0 kB/s"* ]]; then
+  ok
+else
+  fail "top did not print the three samples as speeds: $out"
+fi
+
+world top-says-so-when-the-stream-ends
+export FAKE_TRAFFIC='1000:5000'
+live_start s3cret
+clash_base_file "127.0.0.1:$LIVE_PORT" s3cret
+if out=$(sv top 2>&1); then
+  fail "top exited 0 after the stream ended"
+elif [[ "$out" == *"stream"* ]]; then
+  ok
+else
+  fail "top hid why it stopped: $out"
+fi
+live_stop
+
+world top-sends-the-secret-and-reports-a-refusal
+export FAKE_TRAFFIC='1000:5000'
+live_start s3cret
+clash_base_file "127.0.0.1:$LIVE_PORT" wrong
+if out=$(sv top --count 1 2>&1); then
+  fail "top exited 0 against an API that refused its secret"
+elif [[ "$out" == *"401"* || "$out" == *"secret"* ]]; then
+  ok
+else
+  fail "top did not say the API refused it: $out"
+fi
+live_stop
+
+world top-without-a-clash-api-says-how-to-get-one
+sv add "$HY2" >/dev/null
+if out=$(sv top 2>&1); then
+  fail "top exited 0 with nothing to read"
+elif [[ "$out" == *"monitor"* ]]; then
+  ok
+else
+  fail "top did not name the option that opens the API: $out"
+fi
+
+# The secret travels in a header: an API that is not on loopback would carry it off the
+# machine, so a base that points elsewhere is refused before any connection
+world top-refuses-a-non-loopback-api
+clash_base_file "0.0.0.0:9097" s3cret
+if out=$(sv top --count 1 2>&1); then
+  fail "top exited 0 with an API off loopback"
+elif [[ "$out" == *"loopback"* ]]; then
+  ok
+else
+  fail "top did not say why it refused the address: $out"
+fi
+
+# The d key starts a download through the live tunnel, and the screen says the monitor
+# counts it. Driven on a pty, since the interactive path only runs with a terminal
+world top-download-key-measures-through-the-tunnel
+export FAKE_TRAFFIC='1000:5000,2000:6000,3000:7000,4000:8000,5000:9000,6000:10000,7000:11000,8000:12000,9000:13000,1000:2000'
+export FAKE_CURL='tunnel=0.1:10000000:2.1'
+export FAKE_TRAFFIC_HOLD=1
+live_start s3cret
+clash_base_file "127.0.0.1:$LIVE_PORT" s3cret
+out=$(
+  python3 - "$SKVPN" <<'EOF'
+import os
+import pty
+import re
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+proc = subprocess.Popen([sys.executable, sys.argv[1], "top"], stdin=slave, stdout=slave, stderr=slave)
+os.close(slave)
+seen = b""
+
+
+def read_until(needle, seconds):
+    global seen
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and needle not in seen:
+        if select.select([master], [], [], 0.2)[0]:
+            try:
+                seen += os.read(master, 65536)
+            except OSError:
+                return
+
+
+read_until(b"rx", 5)
+# The warning has to be on the screen before the key is pressed, not only after
+before = seen
+os.write(master, b"d")
+read_until(b"Mbit/s", 8)
+os.write(master, b"q")
+try:
+    code = proc.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    proc.kill()
+    code = "hung"
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", seen.decode(errors="replace"))
+print(text)
+print(f"warned={b'counts' in before}")
+print(f"exit={code}")
+EOF
+)
+live_stop
+# No proxy of the tunnel's own, and none from the environment either: curl obeys
+# http_proxy unless told not to, and that would send the download somewhere else
+if [[ "$out" == *"warned=True"* && "$out" == *"40.0 Mbit/s"* && "$out" == *"exit=0"* ]] &&
+  grep -q '^start tunnel .*--noproxy' "$CURL_LOG" && ! grep '^start tunnel ' "$CURL_LOG" | grep -q -- '--proxy\|-x '; then
+  ok
+else
+  fail "the d key did not run a direct download, show its result and the warning, or q did not quit: $out"
 fi
 
 echo "subscription"

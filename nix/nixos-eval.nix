@@ -53,6 +53,11 @@ let
       extraSettings.log.level = "debug";
       trustedUsers = [ "alice" ];
       guard.ai.enable = true;
+      measure = {
+        enable = true;
+        textfile = "/var/lib/collector/skvpn.prom";
+      };
+      monitor.enable = true;
     };
   };
 
@@ -111,6 +116,11 @@ in
   # The rendered unit text, which is where a wrong type in the guard's unit would show
   enabledGuardUnit = enabled.systemd.units."skvpn-guard.service".text;
   enabledGuardConfig = enabled.environment.etc."sing-box/guard.json".text;
+
+  # Rendered too, for the same reason: the limits and the root-run ExecStartPre are typed
+  enabledMeasureUnit = enabled.systemd.units."skvpn-measure.service".text;
+  enabledMeasureTimer = enabled.systemd.units."skvpn-measure.timer".text;
+  enabledTemplateUnit = enabled.systemd.units."sing-box@.service".text;
 
   dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
   syncthingFollowPostStart = syncthingFollow.systemd.services."sing-box@".postStart;

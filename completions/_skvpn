@@ -31,6 +31,8 @@ _skvpn() {
     'boot:pin a profile for boot, or follow the last up'
     'split:route listed processes or addresses around the tunnel'
     'ping:measure latency through every profile with a throwaway sing-box'
+    'measure:measure latency, speed and UDP loss through every profile'
+    'top:watch the speed through the active tunnel live'
     'status:show the active profile and sync age'
     'export:print the config a profile runs with, or with --sfa a config for a phone'
     '--version:print the version'
@@ -60,6 +62,22 @@ _skvpn() {
       fi
       compadd -- --servers
       _skvpn_profiles
+      ;;
+    measure)
+      if [[ "$words[CURRENT-1]" == --textfile ]]; then
+        _files
+      else
+        if ((CURRENT == 3)); then
+          compadd -- set
+        fi
+        compadd -- --textfile
+        _skvpn_profiles
+      fi
+      ;;
+    top)
+      if ((CURRENT == 3)); then
+        compadd -- --count
+      fi
       ;;
     export)
       compadd -- --sfa --no-tailscale

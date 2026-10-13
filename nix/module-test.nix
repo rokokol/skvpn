@@ -182,6 +182,33 @@ let
     };
   };
 
+  # The timed measurement and the Clash API for `skvpn top`, each away from its default
+  measureOn = eval {
+    services.skvpn = {
+      enable = true;
+      measure = {
+        enable = true;
+        interval = "30min";
+        textfile = "/var/lib/collector/skvpn.prom";
+      };
+    };
+  };
+  measureNoFile = eval {
+    services.skvpn = {
+      enable = true;
+      measure.enable = true;
+    };
+  };
+  monitorOn = eval {
+    services.skvpn = {
+      enable = true;
+      monitor = {
+        enable = true;
+        port = 19097;
+      };
+    };
+  };
+
   off = eval { };
 
   broken = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
@@ -225,6 +252,27 @@ in
   splitBase = splitOn.environment.etc."sing-box/base.d/00-base.json".text;
   splitBroken = broken splitOn;
   splitSingBoxBroken = broken splitSingBox;
+
+  bareTimers = lib.attrNames bare.systemd.timers;
+
+  measureServices = lib.attrNames measureOn.systemd.services;
+  measureUnit = {
+    inherit (measureOn.systemd.services.skvpn-measure) serviceConfig environment;
+    path = names measureOn.systemd.services.skvpn-measure.path;
+  };
+  measureTimer = measureOn.systemd.timers.skvpn-measure.timerConfig;
+  measureNoFileExec = measureNoFile.systemd.services.skvpn-measure.serviceConfig.ExecStart;
+
+  # The script that opens the API is a store path: the dump carries it with its context,
+  # and the flake runs it for real against a scratch tree
+  monitorScript =
+    lib.removePrefix "+"
+      monitorOn.systemd.services."sing-box@".serviceConfig.ExecStartPre;
+  monitorOffScript =
+    lib.removePrefix "+"
+      bare.systemd.services."sing-box@".serviceConfig.ExecStartPre;
+  monitorGuardScript = lib.removePrefix "+" guardOn.systemd.services.skvpn-guard.serviceConfig.ExecStartPre;
+  monitorEtc = lib.attrNames monitorOn.environment.etc;
 
   offEtc = lib.attrNames off.environment.etc;
   offPackages = off.environment.systemPackages;
