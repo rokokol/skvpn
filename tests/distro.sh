@@ -301,18 +301,11 @@ EOF
     sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
     -c /etc/sing-box/guard.json run >/tmp/skvpn-guard.log 2>&1 &
   sing_box_pid=$!
-  # sing-box creates the TUN first and adds its routes and the auto_redirect table only
-  # after that, so the interface alone lets a request leave before the guard sees it. The
-  # table comes last, so it marks the guard as ready
-  local ready=0
-  for _ in {1..100}; do
-    if [[ -e /sys/class/net/skvpn-tun ]] && nft list table inet sing-box >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
-    sleep 0.1
-  done
-  ((ready)) || {
+  # The unit's ExecStartPost, as above: it waits for the auto_redirect chains, which
+  # sing-box adds after the TUN, and the unit counts as started only once it returns
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    env NFT="$(command -v nft)" "$prefix/lib/skvpn/nft-bypass" apply --docker --tailscale --syncthing || {
     cat /tmp/skvpn-guard.log >&2
     return 1
   }
