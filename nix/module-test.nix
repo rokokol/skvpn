@@ -221,6 +221,8 @@ in
   services = lib.attrNames tuned.systemd.services;
   postStart = tuned.systemd.services."sing-box@".postStart;
   unitPath = names tuned.systemd.services."sing-box@".path;
+  stopPost = tuned.systemd.services."sing-box@".serviceConfig.ExecStopPost;
+  holdExec = tuned.systemd.services."skvpn-nft@".serviceConfig.ExecStart;
   capabilities = tuned.systemd.services."sing-box@".serviceConfig.AmbientCapabilities;
   timerInterval = tuned.systemd.timers.skvpn-sync.timerConfig.OnCalendar;
   firewall = tuned.networking.firewall.checkReversePath;

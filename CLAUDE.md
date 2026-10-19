@@ -31,8 +31,9 @@ check-sh.sh          vendored from bash-best-practices, holds install.sh's help 
                      completions to its parser
 tests/               run.sh, distro.sh, stubs, golden parser outputs
 install.sh           installer and option parser for systems without Nix
-nft-bypass.sh        the units' ExecStartPost: return rules in sing-box's nft table, shipped
-                     in the package and installed by install.sh
+nft-bypass.sh        the units' ExecStartPost: return rules in sing-box's nft table, and the
+                     hold between two sing-box processes; shipped in the package and
+                     installed by install.sh
 non-nix/             renderer for the non-Nix base config and the guard
 PITFALLS.md          traps in sing-box and the tools around it
 WORKAROUNDS.md       what nft-bypass.sh works around in sing-box, and when it can go
@@ -48,6 +49,7 @@ DEVIATIONS.md        where this repo departs on purpose from its family's route
 - **the subscription tests run on `file://` URLs** — `urlopen` speaks the scheme, which is what lets sync's prune/spare logic run offline. The real fetch sends a custom `User-Agent`: the stock `Python-urllib` one gets 403 from Cloudflare bot rules
 - **every file after the base can only add** — sing-box sorts all config files by path and keeps the first scalar, so `extraSettings`, a profile and the guard can append rules and add keys but never change `final` or `log.level` (`PITFALLS.md`). The guard is built around that: it redefines `proxy` as direct and appends a DNS catch-all
 - **the guard is the off state, and `guard.json` is its switch** — the module and the renderer write it only when there is a site to refuse, and the CLI decides by the file alone, so `tests/run.sh` turns it on by writing one. The unit skips its start while the TUN exists, and a skipped start answers 0, which is why `start_guard` asks `is-active` afterwards
+- **three places set the hold, and one removes it.** The CLI sets it through `skvpn-nft@hold` before a switch, a failed unit through `ExecStopPost=… hold --if-failed`, and only `nft-bypass apply` lifts it, in the transaction that inserts the bypass rules; a `down` that starts no guard is the one place the CLI lets it go. The CLI goes through a unit because the flags are the policy and only the module and the installer know them. A test of the hold needs the sing-box dead first: while one runs, `auto_redirect` sends TCP to its local port before the hold's filter sees it
 - **a preset, a tailnet range or a rule-set source goes into `policy.json` and nowhere else** — tests derive their expected values from it too. The one copy that cannot read it is the URL of a flake input, which has to be a literal; the `policy-sources` check holds the two together through `flake.lock`. `export --sfa` finds a rule-set's URL by its tag there, never by its path on the host
 - **the nft rules live in `nft-bypass.sh` only** — the module and `install.sh` pick its flags, `tests/docker-routing.sh` and the distro suite run the script itself; a rule copied anywhere else is a second source of truth
 - **`base.d/70-split.json` is CLI-owned state inside a directory the renderers own.** `skvpn split` writes it, neither NixOS nor `install.sh` knows it exists, and `--uninstall` leaves it like a profile. Every split rule is its own rule object routed `direct` because `-C` can only append — that is why the feature is bypass-only. sing-box has no hot reload, and `split add`/`rm` deliberately do **not** restart anything: they print the `skvpn restart` reminder, because dropping the tunnel is the user's call

@@ -208,12 +208,12 @@
                 want 'keys == [
                   "aliases", "bareAliases", "bareBase", "bareEtc", "barePostStart", "bareServices",
                   "bareTimers", "base", "bittorrentBase", "capabilities", "extra", "firewall", "guard",
-                  "guardBase", "guardRestoreOffWantedBy", "guardUnit", "measureNoFileExec",
+                  "guardBase", "guardRestoreOffWantedBy", "guardUnit", "holdExec", "measureNoFileExec",
                   "measureServices", "measureTimer", "measureUnit", "monitorEtc",
                   "monitorGuardScript", "monitorOffScript", "monitorScript", "offAliases", "offEtc",
                   "offFirewall", "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
-                  "splitBase", "splitBroken", "splitSingBoxBroken", "sudoRules", "timerInterval",
+                  "splitBase", "splitBroken", "splitSingBoxBroken", "stopPost", "sudoRules", "timerInterval",
                   "tmpfiles", "unitPath", "users"
                 ]' "the dump no longer has the keys these checks read"
 
@@ -262,6 +262,13 @@
                 want '.postStart | split(" ") | .[2:] | sort == ["--docker", "--syncthing", "--tailscale"]' "a bypass flag never reached the unit"
                 want '.barePostStart | endswith("nft-bypass apply")' "a bare unit passes bypass flags nobody asked for"
                 want '.unitPath | test("nftables")' "the bypass script has no nft on its PATH"
+                # A crash holds the network with the same flags, so the hold lets past what the TUN does
+                want '.stopPost | test("/libexec/skvpn/nft-bypass hold --if-failed( |$)")' "a crashed tunnel does not hold the network"
+                want '.stopPost | split(" ") | .[3:] | sort == ["--docker", "--syncthing", "--tailscale"]' "the hold after a crash does not take the bypass flags"
+                want '.guardUnit.serviceConfig.ExecStopPost | test("nft-bypass hold --if-failed")' "a crashed guard does not hold the network"
+                # The CLI's hold and release: one template running the script's subcommand
+                want '.holdExec | test("/libexec/skvpn/nft-bypass %i( |$)")' "the hold unit does not run the packaged script's subcommand"
+                want '.holdExec | split(" ") | .[2:] | sort == ["--docker", "--syncthing", "--tailscale"]' "the CLI's hold does not take the bypass flags"
                 want '.base | fromjson | .inbounds[0].stack == "gvisor"' "the TUN stack never reached the inbound"
                 want '.base | fromjson | .inbounds[0].address == ["172.19.0.1/30"]' "ipv6 = false still gave the TUN a v6 address"
                 want '.base | fromjson | .route.final == "proxy"' "the default route is not the tunnel"
@@ -271,7 +278,7 @@
                 want '.packages | test("sing-box")' "no daemon installed"
                 want '.packages | test("skvpn")' "no CLI installed"
                 want '.tmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the profiles directory is not declared listable"
-                want '.services | sort == ["sing-box@", "skvpn-restore", "skvpn-sync"]' "a unit is missing"
+                want '.services | sort == ["sing-box@", "skvpn-nft@", "skvpn-restore", "skvpn-sync"]' "a unit is missing"
                 want '.firewall == "loose"' "the reverse-path filter was not loosened"
                 want '.users == ["sing-box"]' "the service user is not declared"
 
@@ -306,7 +313,7 @@
                 }' "the preset rule-sets never landed"
                 want '.presetsBase | fromjson | .route.rule_set | map(.path) | all(test("/nix/store"))' "the preset rule-set files are not store paths"
 
-                want '.restoreOffServices | sort == ["sing-box@", "skvpn-sync"]' "restore.enable = false left the unit in place"
+                want '.restoreOffServices | sort == ["sing-box@", "skvpn-nft@", "skvpn-sync"]' "restore.enable = false left the unit in place"
 
                 # The guard: nothing to refuse, no guard
                 want '.bareServices | index("skvpn-guard") | not' "a guard unit exists with nothing to refuse"
@@ -440,7 +447,7 @@
                 want 'keys == [
                   "dockerFollowBase", "enabledAlias", "enabledBase", "enabledBroken",
                   "enabledExtra", "enabledFirewall", "enabledGuardConfig", "enabledGuardUnit",
-                  "enabledMeasureTimer", "enabledMeasureUnit", "enabledRestore", "enabledSudo",
+                  "enabledMeasureTimer", "enabledMeasureUnit", "enabledNftUnit", "enabledRestore", "enabledSudo",
                   "enabledTemplateUnit", "enabledTimer", "enabledTmpfiles",
                   "hostStrictBroken", "hostStrictFirewall", "offAlias", "offBroken", "offEtc",
                   "offRestore", "offUser", "restoreOffPresent", "restoreOffTemplate",
@@ -464,6 +471,8 @@
                 want '.enabledMeasureUnit | test("PATH=[^\n]*curl")' "the measurement unit has no curl on its PATH"
                 want '.enabledMeasureTimer | test("OnUnitInactiveSec=1h") and test("OnBootSec=5min")' "the measurement timer is not counted from the end of a run"
                 want '.enabledTemplateUnit | test("ExecStartPre=\\+/nix/store/[^\n]*skvpn-clash-api")' "the template unit does not run the Clash API script as root"
+                want '.enabledTemplateUnit | test("ExecStopPost=/nix/store/[^\n]*nft-bypass hold --if-failed")' "the template unit does not hold the network after a crash"
+                want '.enabledNftUnit | test("Type=oneshot") and test("ExecStart=/nix/store/[^\n]*nft-bypass %i") and test("PATH=[^\n]*nftables")' "the hold unit cannot run nft-bypass"
                 want '.enabledTmpfiles == ["d /etc/sing-box/profiles 2755 root sing-box -"]' "the tmpfiles rule did not survive"
                 want '.enabledTimer == "daily"' "the default sync interval did not survive"
                 want '.enabledFirewall == "loose"' "the reverse-path filter was not loosened"

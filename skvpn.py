@@ -82,6 +82,11 @@ UNIT = "sing-box@{}.service"
 # file's presence is the whole question of whether there is a guard at all
 GUARD = CONF / "guard.json"
 GUARD_UNIT = "skvpn-guard.service"
+# nft-bypass's hold, run by a unit because the unit carries the policy's flags. The new
+# sing-box lets the hold go once its rules are in; the CLI only sets it, or drops it for off
+HOLD_UNIT = "skvpn-nft@hold.service"
+RELEASE_UNIT = "skvpn-nft@release.service"
+HELD = "the network stays held until a tunnel is up — `skvpn down --no-guard` lets it go"
 MAX_AGE = 24 * 3600
 
 # Cloudflare's bot rules answer 403 to the stock Python-urllib agent
@@ -163,14 +168,20 @@ def systemctl(*args):
         die(failure(result))
 
 
-def running():
+def instances(state):
     # Asked of systemd, not of the profile directory, which an unprivileged user cannot read
-    result = probe("list-units", "--plain", "--no-legend", "--state=active", "sing-box@*")
+    result = probe("list-units", "--plain", "--no-legend", f"--state={state}", "sing-box@*")
+    names = []
     for line in result.stdout.splitlines():
         unit = line.split()[0]
         if unit.startswith("sing-box@") and unit.endswith(".service"):
-            return unit.removeprefix("sing-box@").removesuffix(".service")
-    return None
+            names.append(unit.removeprefix("sing-box@").removesuffix(".service"))
+    return names
+
+
+def running():
+    names = instances("active")
+    return names[0] if names else None
 
 
 def guard_active():
@@ -185,18 +196,31 @@ def start_guard(wait=True):
     if not wait:
         systemctl("start", "--no-block", GUARD_UNIT)
     else:
-        systemctl("start", GUARD_UNIT)
-        if not guard_active():
-            die(f"the guard did not come up — see journalctl -u {GUARD_UNIT}")
+        result = probe("start", GUARD_UNIT)
+        if result.returncode != 0 or not guard_active():
+            die(f"the guard did not come up — see journalctl -u {GUARD_UNIT}\n  {HELD}")
     print("  ⛨  guard")
 
 
+def hold():
+    """Hold the network before a switch: from the old sing-box stopping to the new one
+    being ready nothing carries the traffic, and it would leave from the host's own
+    address. A switch that cannot hold does not happen."""
+    result = probe("start", HOLD_UNIT)
+    if result.returncode != 0:
+        die(f"could not hold the network, so nothing was switched: {failure(result)}")
+
+
+def release():
+    systemctl("start", RELEASE_UNIT)
+
+
 def stop_active():
-    """Stop whatever runs — the profile or the guard — leaving the boot choice alone."""
-    active = running()
-    if active:
-        systemctl("stop", UNIT.format(active))
-        print(f"  ×  {active}")
+    """Stop whatever runs — the profile or the guard — leaving the boot choice alone.
+    A profile waiting out RestartSec is activating, not active, and would come back."""
+    for name in instances("active,activating"):
+        systemctl("stop", UNIT.format(name))
+        print(f"  ×  {name}")
     if GUARD.exists():
         systemctl("stop", GUARD_UNIT)
 
@@ -1156,13 +1180,19 @@ def cmd_up(args):
     # fail at the unit and still be remembered as the boot choice
     if not profile_path(name).exists():
         die(f"the subscription no longer carries {name}")
+    hold()
     stop_active()
     ACTIVE.unlink(missing_ok=True)
     result = probe("start", UNIT.format(name))
     if result.returncode != 0:
+        # Restart=on-failure would bring it back beside the guard, and its next failure
+        # would hold the network the guard serves
+        probe("stop", UNIT.format(name))
         # The old profile is already stopped: fall back to off, which is the guarded state
-        start_guard()
-        die(failure(result))
+        if GUARD.exists():
+            start_guard()
+            die(failure(result))
+        die(f"{failure(result)}\n  {HELD}")
     # Remembered only once it is up, so a broken profile is not replayed on every boot
     ACTIVE.parent.mkdir(parents=True, exist_ok=True)
     ACTIVE.write_text(name + "\n")
@@ -1176,10 +1206,16 @@ def cmd_down(args):
     if args:
         die("usage: skvpn down [--no-guard]")
     need_root()
+    guarded = GUARD.exists() and not no_guard
+    if guarded:
+        hold()
     stop_active()
     ACTIVE.unlink(missing_ok=True)
-    if not no_guard:
+    if guarded:
         start_guard()
+    else:
+        # Off is the open network, a hold a crash left behind included
+        release()
 
 
 def cmd_restart(_args):
@@ -1187,14 +1223,14 @@ def cmd_restart(_args):
     list, or any other base.d edit, gets onto the wire. With no profile up, the guard."""
     need_root()
     active = running()
-    if active is None:
-        if guard_active():
-            systemctl("restart", GUARD_UNIT)
-            print("  ↻  guard")
-            return
+    if active is None and not guard_active():
         die("nothing is up — `skvpn up <name>` starts a profile")
-    systemctl("restart", UNIT.format(active))
-    print(f"  ↻  {active}")
+    unit = GUARD_UNIT if active is None else UNIT.format(active)
+    hold()
+    result = probe("restart", unit)
+    if result.returncode != 0:
+        die(f"{failure(result)}\n  {HELD}")
+    print(f"  ↻  {active or 'guard'}")
 
 
 def cmd_restore(_args):

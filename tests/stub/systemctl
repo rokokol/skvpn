@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Answers list-units from FAKE_ACTIVE and records every call for the suite to assert on
+# Answers list-units from FAKE_ACTIVE, and from FAKE_ACTIVATING when the call asks for that
+# state too, and records every call for the suite to assert on
 set -euo pipefail
 
 printf '%s\n' "$*" >>"${SYSTEMCTL_LOG:?}"
@@ -10,4 +11,8 @@ fi
 
 if [[ "${1:-}" == list-units && -n "${FAKE_ACTIVE:-}" ]]; then
   printf 'sing-box@%s.service loaded active running\n' "$FAKE_ACTIVE"
+fi
+# A unit waiting out RestartSec is activating, not active
+if [[ "${1:-}" == list-units && "$*" == *activating* && -n "${FAKE_ACTIVATING:-}" ]]; then
+  printf 'sing-box@%s.service loaded activating auto-restart\n' "$FAKE_ACTIVATING"
 fi

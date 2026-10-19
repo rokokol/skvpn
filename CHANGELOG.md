@@ -10,10 +10,16 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - `measure.enable`, `measure.interval` and `measure.textfile` on NixOS run it on a timer as a root oneshot with a memory cap and a time limit, counted from the end of the last run
 - `skvpn top [--count N]` shows the speed through the running tunnel live, from sing-box's Clash API; `d` measures a download through the tunnel, and the screen says the monitor counts it too
 - `monitor.enable` on NixOS opens that API on loopback behind a secret made once and kept in a root-only file. Off by default; turning it on or off restarts the running tunnel once
+- a [hold](README.md#hold) between two sing-box processes: `skvpn up`, `restart` and a `down` to the guard refuse this host's outgoing traffic until the new sing-box is ready, and a sing-box that fails does the same until its restart is up. If nothing comes up, `skvpn down --no-guard` lets the network go. A new `skvpn-nft@.service` runs the hold for the CLI
 
 ### Changed
 
 - the DNS-over-TLS server behind the tunnel defaults to Cloudflare's `1.1.1.1` instead of Google's `8.8.8.8`, on NixOS (`dns.remoteServer`) and for the installer (`--dns-server`). Google forwards a part of the client address to the sites it resolves, and Cloudflare does not. A host that sets the server keeps it
+
+### Fixed
+
+- a profile that `skvpn up` could not start is stopped before the guard starts, so `Restart=on-failure` no longer tries it again every ten seconds beside the guard
+- `skvpn down` also stops a profile that waits for its automatic restart, which systemd does not count as active
 
 ## [3.1.0] - 2026-10-04
 

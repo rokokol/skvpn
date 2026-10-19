@@ -109,13 +109,17 @@ let
   };
 
   # Return rules sing-box's own auto_redirect table lacks, inserted once it exists: the
-  # flags are the policy, the rules live in the script the installer runs too
-  bypassCommand = lib.concatStringsSep " " (
-    [ "${cfg.package}/libexec/skvpn/nft-bypass apply" ]
-    ++ lib.optional cfg.tailscale.enable "--tailscale"
-    ++ lib.optional cfg.docker.enable "--docker"
-    ++ lib.optional cfg.syncthing.enable "--syncthing"
-  );
+  # flags are the policy, the rules live in the script the installer runs too. Every
+  # subcommand takes the same flags, so the hold lets past what the TUN would
+  bypass =
+    subcommand:
+    lib.concatStringsSep " " (
+      [ "${cfg.package}/libexec/skvpn/nft-bypass ${subcommand}" ]
+      ++ lib.optional cfg.tailscale.enable "--tailscale"
+      ++ lib.optional cfg.docker.enable "--docker"
+      ++ lib.optional cfg.syncthing.enable "--syncthing"
+    );
+  bypassCommand = bypass "apply";
 
   # The guard is what runs while no profile is up, and exists only with something to refuse
   guardGeosite =
@@ -211,9 +215,12 @@ let
     wants = [ "network-online.target" ];
 
     path = [ pkgs.nftables ];
+    # The bypass step also lets the hold go, once the TUN carries the traffic
     postStart = bypassCommand;
 
     serviceConfig = {
+      # A crash holds the network until the restart is up; a stop on purpose does not
+      ExecStopPost = bypass "hold --if-failed";
       User = "sing-box";
       # Upstream's own set. The last two are what a process rule runs on; without them
       # every split entry is silently a no-op (PITFALLS.md)
@@ -806,6 +813,17 @@ in
         };
       }
     );
+
+    # The CLI's way to the hold: skvpn-nft@hold before a switch, skvpn-nft@release for off.
+    # A unit because the flags are the policy, and the policy lives here
+    systemd.services."skvpn-nft@" = {
+      description = "skvpn: nft-bypass %i";
+      path = [ pkgs.nftables ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = bypass "%i";
+      };
+    };
 
     # /etc/systemd/system is a store symlink on NixOS, so `systemctl enable
     # sing-box@<name>` cannot persist a choice — the last one goes to /var/lib/skvpn/active

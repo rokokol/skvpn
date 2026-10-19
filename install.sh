@@ -257,6 +257,9 @@ guard_config="$sysconf_root/sing-box/guard.json"
 guard_unit="$unit_root/skvpn-guard.service"
 bypass_bin="$PREFIX/lib/skvpn/nft-bypass"
 bypass_command="$bypass_bin apply${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
+# The same flags for the hold, so it lets past what the TUN does
+hold_failed_command="$bypass_bin hold --if-failed${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
+nft_unit="$unit_root/skvpn-nft@.service"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
 profile_file="$sysconf_root/profile.d/skvpn.sh"
 manifest_file="$root/share/skvpn/install-manifest"
@@ -466,6 +469,10 @@ if ((UNINSTALL)); then
     if ((${#active_units[@]})); then
       systemctl stop "${active_units[@]}"
     fi
+    # A hold a crash left behind would outlive the script that removes it
+    if [[ -f "$nft_unit" ]]; then
+      systemctl start skvpn-nft@release.service || true
+    fi
   fi
   if ((managed)); then
     disable_discord_voice_fix
@@ -549,7 +556,7 @@ if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
     "$base_config" "$extra_config" "$sing_box_dropin"
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
     "$unit_root/skvpn-sync.timer" "$sudoers_file" "$profile_file" "$sysctl_file"
-    "$guard_config" "$guard_unit" "$root/lib/skvpn/nft-bypass"
+    "$guard_config" "$guard_unit" "$root/lib/skvpn/nft-bypass" "$nft_unit"
   )
   for path in "${managed_paths[@]}"; do
     [[ ! -e "$path" ]] || {
@@ -653,8 +660,22 @@ CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 Environment=NFT=$NFT
 ExecStartPost=$bypass_command
+ExecStopPost=$hold_failed_command
 EOF
 rec "$sing_box_dropin"
+
+# The CLI's way to the hold: skvpn-nft@hold before a switch, skvpn-nft@release for off.
+# A unit because the flags are the policy, and the policy is this run's
+install -Dm644 /dev/stdin "$nft_unit" <<EOF
+[Unit]
+Description=skvpn: nft-bypass %i
+
+[Service]
+Type=oneshot
+Environment=NFT=$NFT
+ExecStart=$bypass_bin %i${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}
+EOF
+rec "$nft_unit"
 
 # The guard: the same base under its own file, run while no profile is up. A whole unit
 # rather than a drop-in — nothing of the distribution's ships for it
@@ -678,6 +699,7 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRAC
 ExecStart=$SING_BOX -D $LOCALSTATEDIR/lib/skvpn-guard -C $SYSCONFDIR/sing-box/base.d -c $SYSCONFDIR/sing-box/guard.json run
 Environment=NFT=$NFT
 ExecStartPost=$bypass_command
+ExecStopPost=$hold_failed_command
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10s

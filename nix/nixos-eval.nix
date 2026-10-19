@@ -121,6 +121,7 @@ in
   enabledMeasureUnit = enabled.systemd.units."skvpn-measure.service".text;
   enabledMeasureTimer = enabled.systemd.units."skvpn-measure.timer".text;
   enabledTemplateUnit = enabled.systemd.units."sing-box@.service".text;
+  enabledNftUnit = enabled.systemd.units."skvpn-nft@.service".text;
 
   dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
   syncthingFollowPostStart = syncthingFollow.systemd.services."sing-box@".postStart;

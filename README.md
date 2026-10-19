@@ -51,9 +51,9 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn add <uri>…` | add profiles from `vless://`, `hysteria2://`/`hy2://` or `trojan://` share links |
 | `skvpn rm <name>…` | delete profiles; the running one is refused |
 | `skvpn ls [--names \| --servers]` | list profiles; `--names` prints bare names and needs no root; `--servers` adds each node's address, kept out of the table otherwise |
-| `skvpn up <name>` | sync if stale, stop the active profile, start this one, remember it for boot |
-| `skvpn down [--no-guard]` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, start it, or with `--no-guard` leave everything off |
-| `skvpn restart` | start the active profile over on the base as it is now — how a changed split list gets onto the wire; with only the guard up, the guard |
+| `skvpn up <name>` | sync if stale, [hold](#hold) the network, stop the active profile, start this one, remember it for boot |
+| `skvpn down [--no-guard]` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, hold the network and start it, or with `--no-guard` leave everything off and let a hold go |
+| `skvpn restart` | hold the network and start the active profile over on the base as it is now — how a changed split list gets onto the wire; with only the guard up, the guard |
 | `skvpn restore` | start the profile chosen for boot — the boot-time half of `up`; the guard when there is nothing to bring back |
 | `skvpn boot [<name> \| last]` | pin a profile for boot regardless of what is up; `last` goes back to following `up`; no argument shows the choice |
 | `skvpn split add [name\|path\|ip\|domain] <value>…` | route a process (by name, the default), an executable (absolute path), an address/CIDR or a site (a bare name, a URL or `*.example.com`) around the tunnel; asks for a `skvpn restart` |
@@ -128,6 +128,12 @@ Bypass only: a listed process name, executable path, destination address or site
 ### Guard
 
 With nothing up, every site is reached from your own address, and some services hold that against the account. The guard is what "off" means once you give it something to refuse: `skvpn down` starts a sing-box on the same base that sends everything direct but refuses the listed sites, both the name lookup and the connection, matched by the name asked for or the TLS name sent. Boot starts it when there is no profile to bring back, and `skvpn up` stops it. The AI preset refuses the AI services that turn sanctioned regions away, from a rule-set pinned like the country presets; your own zones and rule-sets add to it. A process or site on the split list still leaves direct, the same as with a profile up
+
+### Hold
+
+A switch stops one sing-box and starts another, and in between traffic would leave from your own address. So `up`, `restart` and a `down` to the guard first hold the network: the `inet skvpn-hold` nftables table refuses this host's outgoing traffic until the new sing-box is ready and removes it. A sing-box that fails holds it too, until its restart is up. The hold fails closed: **if nothing comes up, `skvpn down --no-guard` lets the network go**, and so does a reboot
+
+Still let out: loopback, replies to inbound connections, DHCP, private addresses, and what `tailscale.enable` and `syncthing.enable` keep past the TUN, so `ssh` over the tailnet reaches a held host. Not held: boot, a NixOS rebuild that restarts the tunnel, `systemctl` typed by hand, and traffic the host forwards for containers
 
 ### A phone
 

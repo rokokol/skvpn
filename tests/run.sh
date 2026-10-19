@@ -78,6 +78,7 @@ world() {
   export SING_BOX_LOG="$SKVPN_ROOT/sing-box.log"
   : >"$SING_BOX_LOG"
   unset FAKE_ACTIVE
+  unset FAKE_ACTIVATING
   unset SYSTEMCTL_FAIL
   unset FAKE_DELAYS
   unset SING_BOX_FAIL
@@ -359,7 +360,7 @@ world down-without-guard-starts-nothing
 FAKE_ACTIVE=HY2
 export FAKE_ACTIVE
 sv down >/dev/null
-if ! grep -q start "$SYSTEMCTL_LOG"; then
+if ! grep -qE '^start (sing-box@|skvpn-guard)' "$SYSTEMCTL_LOG"; then
   ok
 else
   fail "down started something with no guard configured"
@@ -387,7 +388,7 @@ export FAKE_ACTIVE
 sv down --no-guard >/dev/null || true
 if grep -q 'stop sing-box@HY2.service' "$SYSTEMCTL_LOG" &&
   grep -q 'stop skvpn-guard.service' "$SYSTEMCTL_LOG" &&
-  ! grep -q '^start' "$SYSTEMCTL_LOG"; then
+  ! grep -qE '^start (sing-box@|skvpn-guard)' "$SYSTEMCTL_LOG"; then
   ok
 else
   fail "down --no-guard left something running or started the guard"
@@ -460,6 +461,143 @@ if [[ "$on" == *"  profile   none, guard on"* && "$off" == *"  profile   none"* 
   ok
 else
   fail "status did not tell a guarded off from a bare one"
+fi
+
+echo "hold"
+
+# Between the old sing-box and the new one nothing carries the traffic, so a switch first
+# holds the network; the new unit's bypass step lets it go, never the CLI
+HOLD='start skvpn-nft@hold.service'
+RELEASE='start skvpn-nft@release.service'
+HELD_HINT='skvpn down --no-guard'
+
+world up-holds-before-it-stops
+sv add "$HY2" >/dev/null
+export FAKE_ACTIVE=TROJAN-node
+sv up HY2 >/dev/null
+held=$(call_at "$HOLD")
+stopped=$(call_at 'stop sing-box@TROJAN-node.service')
+started=$(call_at 'start sing-box@HY2.service')
+if [[ -n "$held" && -n "$stopped" && -n "$started" ]] && ((held < stopped && stopped < started)) &&
+  ! grep -qF "$RELEASE" "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "up stopped the old tunnel before holding the network, or let it go itself"
+fi
+
+world down-holds-until-the-guard-is-up
+guard_on
+export FAKE_ACTIVE=HY2
+sv down >/dev/null
+held=$(call_at "$HOLD")
+stopped=$(call_at 'stop sing-box@HY2.service')
+if [[ -n "$held" && -n "$stopped" ]] && ((held < stopped)) && ! grep -qF "$RELEASE" "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down stopped the profile before holding the network, or let it go before the guard"
+fi
+
+# Off with nothing to guard is the open network, and so is --no-guard: a hold left by a
+# crash goes too, after the last sing-box has stopped
+world down-without-a-guard-lets-the-network-go
+export FAKE_ACTIVE=HY2
+sv down >/dev/null
+stopped=$(call_at 'stop sing-box@HY2.service')
+released=$(call_at "$RELEASE")
+if [[ -n "$stopped" && -n "$released" ]] && ((stopped < released)) && ! grep -qF "$HOLD" "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down with no guard left the network held"
+fi
+
+world down-no-guard-lets-the-network-go
+guard_on
+export FAKE_ACTIVE=HY2
+sv down --no-guard >/dev/null
+stopped=$(call_at 'stop skvpn-guard.service')
+released=$(call_at "$RELEASE")
+if [[ -n "$stopped" && -n "$released" ]] && ((stopped < released)) && ! grep -qF "$HOLD" "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down --no-guard left the network held"
+fi
+
+world restart-holds-first
+export FAKE_ACTIVE=HY2
+sv restart >/dev/null
+held=$(call_at "$HOLD")
+restarted=$(call_at 'restart sing-box@HY2.service')
+if [[ -n "$held" && -n "$restarted" ]] && ((held < restarted)); then
+  ok
+else
+  fail "restart took the tunnel down before holding the network"
+fi
+
+world restart-holds-before-the-guard
+guard_on
+sv restart >/dev/null
+held=$(call_at "$HOLD")
+restarted=$(call_at 'restart skvpn-guard.service')
+if [[ -n "$held" && -n "$restarted" ]] && ((held < restarted)); then
+  ok
+else
+  fail "restart took the guard down before holding the network"
+fi
+
+# A switch that cannot hold would leak; the running tunnel stays instead
+world a-switch-that-cannot-hold-changes-nothing
+sv add "$HY2" >/dev/null
+export FAKE_ACTIVE=TROJAN-node
+export SYSTEMCTL_FAIL='skvpn-nft@hold'
+if ! err=$(sv up HY2 2>&1) && ! grep -qE '^(stop|start sing-box@)' "$SYSTEMCTL_LOG" &&
+  [[ "$err" == *hold* ]]; then
+  ok
+else
+  fail "up switched without a hold, or did not say why it refused"
+fi
+
+# A unit waiting out RestartSec is not active, and would come back after down
+world down-stops-a-profile-waiting-to-restart
+export FAKE_ACTIVATING=HY2
+sv down --no-guard >/dev/null
+if grep -q 'stop sing-box@HY2.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "down left a restarting profile to come back"
+fi
+
+# Restart=on-failure would bring the failed profile back beside the guard, where its next
+# failure holds the network the guard is serving
+world up-stops-the-profile-that-failed
+sv add "$HY2" >/dev/null
+guard_on
+export SYSTEMCTL_FAIL='start sing-box@HY2'
+sv up HY2 >/dev/null 2>&1 || true
+failed=$(call_at 'start sing-box@HY2.service')
+stopped=$({ grep -n 'stop sing-box@HY2.service' "$SYSTEMCTL_LOG" || true; } | tail -n1 | cut -d: -f1)
+guarded=$(call_at 'start skvpn-guard.service')
+if [[ -n "$failed" && -n "$stopped" && -n "$guarded" ]] && ((failed < stopped && stopped < guarded)); then
+  ok
+else
+  fail "a profile that failed to start was left to restart beside the guard"
+fi
+
+world a-failed-up-says-the-network-is-held
+sv add "$HY2" >/dev/null
+export SYSTEMCTL_FAIL='start sing-box@HY2'
+if ! err=$(sv up HY2 2>&1) && [[ "$err" == *"$HELD_HINT"* ]]; then
+  ok
+else
+  fail "a failed up did not say how to let the held network go"
+fi
+
+world a-guard-that-stayed-down-says-the-network-is-held
+guard_on
+export SYSTEMCTL_FAIL='is-active'
+if ! err=$(sv down 2>&1) && [[ "$err" == *"$HELD_HINT"* ]]; then
+  ok
+else
+  fail "a guard that stayed down did not say how to let the held network go"
 fi
 
 echo "export"
@@ -1962,6 +2100,23 @@ if grep -qx 'ExecStartPost=/usr/local/lib/skvpn/nft-bypass apply --tailscale --d
   ok
 else
   fail "the bypass script is missing, unrecorded, or the unit runs it with the wrong flags"
+fi
+
+# The hold takes the bypass flags wherever it is set: after a crash, and by the CLI's unit
+world installer-wires-the-hold
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tailscale --syncthing --guard-zone .example.com >/dev/null
+dropin="$SKVPN_ROOT/stage/etc/systemd/system/sing-box@.service.d/skvpn.conf"
+nft_unit="$SKVPN_ROOT/stage/etc/systemd/system/skvpn-nft@.service"
+if grep -qx 'ExecStopPost=/usr/local/lib/skvpn/nft-bypass hold --if-failed --tailscale --syncthing' "$dropin" &&
+  grep -qx 'ExecStopPost=/usr/local/lib/skvpn/nft-bypass hold --if-failed --tailscale --syncthing' \
+    "$SKVPN_ROOT/stage/etc/systemd/system/skvpn-guard.service" &&
+  grep -qx 'ExecStart=/usr/local/lib/skvpn/nft-bypass %i --tailscale --syncthing' "$nft_unit" &&
+  grep -qx 'Type=oneshot' "$nft_unit" &&
+  grep -qx 'Environment=NFT=/usr/sbin/nft' "$nft_unit" &&
+  grep -qx '/etc/systemd/system/skvpn-nft@.service' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
+  ok
+else
+  fail "a crash or the CLI cannot hold the network, or holds it without the bypass flags"
 fi
 
 guard_stage() { printf '%s/stage/etc/%s' "$SKVPN_ROOT" "$1"; }

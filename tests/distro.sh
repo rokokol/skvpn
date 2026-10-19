@@ -83,6 +83,10 @@ EOF
   test -f /etc/systemd/system/sing-box@.service.d/skvpn.conf
   grep -qx "ExecStartPost=$prefix/lib/skvpn/nft-bypass apply --docker --tailscale --syncthing" \
     /etc/systemd/system/sing-box@.service.d/skvpn.conf
+  grep -qx "ExecStopPost=$prefix/lib/skvpn/nft-bypass hold --if-failed --docker --tailscale --syncthing" \
+    /etc/systemd/system/sing-box@.service.d/skvpn.conf
+  grep -qx "ExecStart=$prefix/lib/skvpn/nft-bypass %i --docker --tailscale --syncthing" \
+    /etc/systemd/system/skvpn-nft@.service
   grep -qx 'ConditionPathExists=!/sys/class/net/skvpn-tun' /etc/systemd/system/skvpn-guard.service
   # The distribution's own sing-box has to accept the guard laid over the base
   sing-box check -C /etc/sing-box/base.d -c /etc/sing-box/guard.json
@@ -325,6 +329,62 @@ EOF
   timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ ||
     timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ || {
     echo "  !! the guard refused a site nobody listed" >&2
+    return 1
+  }
+
+  # As ExecStopPost runs it after a crash: the unit's identity, systemd's SERVICE_RESULT,
+  # and no sing-box left. A live one would still take TCP: auto_redirect sends it to
+  # sing-box's port before the hold sees it, which is the tunnel, not a leak
+  say "a hold refuses the host's traffic until the bypass step lets it go"
+  kill "$sing_box_pid"
+  wait "$sing_box_pid" 2>/dev/null || true
+  sing_box_pid=""
+  for _ in {1..50}; do
+    [[ -e /sys/class/net/skvpn-tun ]] || nft list table inet sing-box >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    env NFT="$(command -v nft)" SERVICE_RESULT=success \
+    "$prefix/lib/skvpn/nft-bypass" hold --if-failed --docker --tailscale --syncthing
+  if nft list table inet skvpn-hold >/dev/null 2>&1; then
+    echo "  !! a unit stopped on purpose held the network" >&2
+    return 1
+  fi
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    env NFT="$(command -v nft)" SERVICE_RESULT=exit-code \
+    "$prefix/lib/skvpn/nft-bypass" hold --if-failed --docker --tailscale --syncthing
+  if timeout 20 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ 2>/dev/null; then
+    echo "  !! a held network still let a client out" >&2
+    nft list table inet skvpn-hold >&2
+    return 1
+  fi
+  # Refused by the hold itself, not lost to some other failure on the way
+  nft list table inet skvpn-hold | grep -qE 'counter packets [1-9]' || {
+    echo "  !! the client failed, but not on the hold's reject" >&2
+    nft list table inet skvpn-hold >&2
+    return 1
+  }
+  # The restart: sing-box comes back under the hold, and its bypass step lets it go
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
+    -c /etc/sing-box/guard.json run >/tmp/skvpn-guard.log 2>&1 &
+  sing_box_pid=$!
+  setpriv --reuid=sing-box --regid=sing-box --init-groups \
+    --inh-caps="$caps" --ambient-caps="$caps" \
+    env NFT="$(command -v nft)" "$prefix/lib/skvpn/nft-bypass" apply --docker --tailscale --syncthing || {
+    cat /tmp/skvpn-guard.log >&2
+    return 1
+  }
+  if nft list table inet skvpn-hold >/dev/null 2>&1; then
+    echo "  !! the bypass step left the hold in place" >&2
+    return 1
+  fi
+  timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ ||
+    timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ || {
+    echo "  !! the network stayed shut after the hold went" >&2
     return 1
   }
 
