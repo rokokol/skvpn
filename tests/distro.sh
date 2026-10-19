@@ -289,7 +289,7 @@ EOF
   wait "$sing_box_pid" 2>/dev/null || true
   sing_box_pid=""
   for _ in {1..50}; do
-    [[ -e /sys/class/net/skvpn-tun ]] || break
+    [[ -e /sys/class/net/skvpn-tun ]] || nft list table inet sing-box >/dev/null 2>&1 || break
     sleep 0.1
   done
   # Looked up with no TUN, so the TLS case below can reach the guard without DNS
@@ -301,11 +301,18 @@ EOF
     sing-box -D /tmp/skvpn-sing-box -C /etc/sing-box/base.d \
     -c /etc/sing-box/guard.json run >/tmp/skvpn-guard.log 2>&1 &
   sing_box_pid=$!
-  for _ in {1..50}; do
-    [[ -e /sys/class/net/skvpn-tun ]] && break
+  # sing-box creates the TUN first and adds its routes and the auto_redirect table only
+  # after that, so the interface alone lets a request leave before the guard sees it. The
+  # table comes last, so it marks the guard as ready
+  local ready=0
+  for _ in {1..100}; do
+    if [[ -e /sys/class/net/skvpn-tun ]] && nft list table inet sing-box >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
     sleep 0.1
   done
-  [[ -e /sys/class/net/skvpn-tun ]] || {
+  ((ready)) || {
     cat /tmp/skvpn-guard.log >&2
     return 1
   }
@@ -314,10 +321,12 @@ EOF
   cp "$(command -v curl)" /tmp/fetch
   if timeout 20 /tmp/fetch -fsS -o /dev/null https://example.org/ 2>/dev/null; then
     echo "  !! a guarded zone still resolved" >&2
+    cat /tmp/skvpn-guard.log >&2
     return 1
   fi
   if timeout 20 /tmp/fetch -fsS -o /dev/null --resolve "example.org:443:$guarded_ip" https://example.org/ 2>/dev/null; then
     echo "  !! a guarded zone still connected by its TLS name" >&2
+    cat /tmp/skvpn-guard.log >&2
     return 1
   fi
   timeout 30 /tmp/fetch -fsS -o /dev/null https://deb.debian.org/ ||
