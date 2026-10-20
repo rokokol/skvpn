@@ -87,6 +87,19 @@ GUARD_UNIT = "skvpn-guard.service"
 HOLD_UNIT = "skvpn-nft@hold.service"
 RELEASE_UNIT = "skvpn-nft@release.service"
 HELD = "the network stays held until a tunnel is up — `skvpn down --no-guard` lets it go"
+# skvpn's own Tor. tor.json is the sing-box half of the `tor` profile, rendered beside the
+# torrc from the same options, and its presence is the whole question of whether there is
+# a Tor here, as guard.json is for the guard. The bridges file is CLI state the torrc
+# includes; without it the unit does not start
+TOR_PROFILE = CONF / "tor.json"
+TORRC = CONF / "torrc"
+TOR_BRIDGES = ROOT / "var/lib/skvpn/tor-bridges.conf"
+TOR_UNIT = "skvpn-tor.service"
+# The profile `skvpn up tor` writes from tor.json, so no share link may take the name
+TOR_NAME = "tor"
+# The node `up tor --via` carries Tor's own traffic through, under a tag of its own
+VIA_TAG = "tor-via"
+MOAT_TIMEOUT = 30
 MAX_AGE = 24 * 3600
 
 # Cloudflare's bot rules answer 403 to the stock Python-urllib agent
@@ -114,6 +127,13 @@ def profile_path(name):
 
 def profile_names():
     return sorted(p.stem for p in PROFILES.glob("*.json"))
+
+
+def node_names():
+    """The profiles that are nodes: what `ping`, `measure` and a phone take when no name
+    is given. The `tor` profile is the host's own Tor — a download through it every hour
+    is a load on the Tor network, and a phone has no such Tor to dial"""
+    return [name for name in profile_names() if name != TOR_NAME]
 
 
 def remembered():
@@ -332,6 +352,8 @@ def uri_to_profile(uri):
     node = parser(url, {k: v[0] for k, v in parse_qs(url.query).items()})
     node["tag"] = "proxy"
     name = unquote(url.fragment) or url.hostname
+    if slug(name) == TOR_NAME:
+        raise ValueError(f"{TOR_NAME} is the name of the host's own Tor profile — rename the link")
     return name, {"outbounds": [node]}
 
 
@@ -1094,6 +1116,208 @@ def cmd_split(args):
     split_notice()
 
 
+# --- tor --------------------------------------------------------------------
+
+
+def need_tor():
+    if not TOR_PROFILE.exists():
+        die("Tor is not configured here — services.skvpn.tor.enable, or install.sh --tor")
+
+
+def tor_transports():
+    """The transports the torrc runs, from its ClientTransportPlugin lines: Moat is asked
+    for these and no others, since a bridge of any other kind is one Tor cannot use."""
+    transports = []
+    try:
+        lines = TORRC.read_text().splitlines()
+    except OSError:
+        die(f"cannot read {TORRC}")
+    for line in lines:
+        words = line.split()
+        if len(words) > 2 and words[0] == "ClientTransportPlugin":
+            transports += [t for t in words[1].split(",") if t not in transports]
+    return transports
+
+
+def tor_socks():
+    """The SOCKS address the torrc gives users: its first SocksPort."""
+    try:
+        for line in TORRC.read_text().splitlines():
+            words = line.split()
+            if len(words) > 1 and words[0] == "SocksPort":
+                return words[1]
+    except OSError:
+        pass
+    return None
+
+
+def preset_countries():
+    """The countries whose presets the live base routes direct, by the tags of their
+    rule-sets: the bridges a censor there has not yet blocked are the ones wanted."""
+    tags = set()
+    for path in sorted(BASE_D.glob("*.json")) if BASE_D.is_dir() else []:
+        try:
+            tags.update(rs.get("tag") for rs in json.loads(path.read_text()).get("route", {}).get("rule_set", []))
+        except (OSError, ValueError, AttributeError):
+            continue
+    return [p["tag"] for p in policy()["presets"] if {f"geosite-{p['tag']}", f"geoip-{p['tag']}"} & tags]
+
+
+def moat_bridges(country, transports):
+    """[(type, bridge line)] Moat recommends for the country, of the transports given, in
+    the order it recommends them. Moat says what went wrong in an `errors` list."""
+    url = os.environ.get("SKVPN_MOAT_URL") or policy()["tor"]["moat"]
+    body = json.dumps({"country": country, "transports": transports}).encode()
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/vnd.api+json", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=MOAT_TIMEOUT) as resp:
+            answer = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        active = running()
+        hint = f" — {active} is up, so the request went through it" if active else ""
+        die(f"Moat unreachable: {exc}{hint}")
+    errors = answer.get("errors") if isinstance(answer, dict) else None
+    if errors:
+        die(f"Moat refused: {'; '.join(str(e.get('detail', e)) for e in errors)}")
+    bridges = []
+    for setting in answer.get("settings") or []:
+        offer = setting.get("bridges", {}) if isinstance(setting, dict) else {}
+        if offer.get("type") in transports:
+            bridges += [(offer["type"], line) for line in offer.get("bridge_strings", [])]
+    if not bridges:
+        die(f"Moat offered no bridges for {country} of a kind this Tor runs ({', '.join(transports)})")
+    return bridges
+
+
+def tor_bridges():
+    """({type: count}, country) of the bridges file; ({}, None) without one."""
+    counts, country = {}, None
+    try:
+        lines = TOR_BRIDGES.read_text().splitlines()
+    except OSError:
+        return counts, country
+    for line in lines:
+        words = line.split()
+        if words[:2] == ["#", "country"] and len(words) == 3:
+            country = words[2]
+        elif len(words) > 1 and words[0] == "Bridge":
+            counts[words[1]] = counts.get(words[1], 0) + 1
+    return counts, country
+
+
+def bridges_line():
+    counts, country = tor_bridges()
+    if not counts:
+        return "  bridges   none — `sudo skvpn tor bridges update` fetches them"
+    age = int((time.time() - TOR_BRIDGES.stat().st_mtime) / 60)
+    kinds = ", ".join(f"{kind} {count}" for kind, count in counts.items())
+    return f"  bridges   {kinds} ({country or 'country unknown'}, {age} min ago)"
+
+
+def tor_bootstrap():
+    """The last bootstrap line Tor logged, as `73% (loading_descriptors)`; None when the
+    journal is not readable here, which takes root or the journal's group."""
+    result = subprocess.run(
+        ["journalctl", "-u", TOR_UNIT, "-o", "cat", "--no-pager", "-n", "500"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    found = re.findall(r"Bootstrapped (\d+%(?: \([a-z_]+\))?)", result.stdout)
+    return found[-1] if found else None
+
+
+def bridges_update(args):
+    country = None
+    rest = iter(args)
+    for arg in rest:
+        if arg == "--country":
+            country = next(rest, "").lower()
+            if not re.fullmatch(r"[a-z]{2}", country):
+                die("usage: skvpn tor bridges update [--country CC] — a two-letter country code")
+        else:
+            die("usage: skvpn tor bridges update [--country CC]")
+    need_root()
+    need_tor()
+    if country is None:
+        countries = preset_countries()
+        if len(countries) != 1:
+            found = f"the base routes {', '.join(countries)} direct" if countries else "no preset names one"
+            die(f"which country's bridges? {found} — pass --country CC")
+        country = countries[0]
+    transports = tor_transports()
+    if not transports:
+        die(f"{TORRC} runs no transport plugin, so no bridge would work")
+    bridges = moat_bridges(country, transports)
+    TOR_BRIDGES.parent.mkdir(parents=True, exist_ok=True)
+    # Tor reads it as its own user; Moat hands these out to anyone who asks
+    lines = [f"# country {country}"] + [f"Bridge {line}" for _, line in bridges]
+    write_private(TOR_BRIDGES, "\n".join(lines) + "\n", 0o644)
+    for kind in dict.fromkeys(kind for kind, _ in bridges):
+        print(f"  +  {kind} ×{sum(1 for k, _ in bridges if k == kind)}")
+    # Tor rereads its config on a reload, bridges included; a unit the missing file kept
+    # from starting starts now
+    result = probe("reload-or-restart", TOR_UNIT)
+    if result.returncode != 0:
+        die(f"{failure(result)} — see journalctl -u {TOR_UNIT}")
+    print(f"  ↻  {TOR_UNIT}")
+
+
+TOR_USAGE = "usage: skvpn tor [status | bridges [ls | update [--country CC]]]"
+
+
+def cmd_tor(args):
+    """skvpn's own Tor: its state, and the bridges it reaches the network through."""
+    if args[:1] == ["bridges"]:
+        if args[1:2] == ["update"]:
+            bridges_update(args[2:])
+            return
+        if args[1:] not in ([], ["ls"]):
+            die(TOR_USAGE)
+        need_tor()
+        print(bridges_line())
+        return
+    if args not in ([], ["status"]):
+        die(TOR_USAGE)
+    need_tor()
+    state = probe("is-active", TOR_UNIT).stdout.strip() or "unknown"
+    print(f"  tor       {state}")
+    bootstrap = tor_bootstrap() if state == "active" else None
+    if bootstrap:
+        print(f"  bootstrap {bootstrap}")
+    print(bridges_line())
+    socks = tor_socks()
+    if socks:
+        print(f"  socks     {socks}")
+    if running() == TOR_NAME:
+        print("  all traffic goes through Tor")
+
+
+def tor_profile(via):
+    """The `tor` profile: tor.json as rendered, and with a node to go through, that node
+    under VIA_TAG where Tor's own traffic would have left direct."""
+    try:
+        config = json.loads(TOR_PROFILE.read_text())
+    except (OSError, ValueError):
+        die(f"{TOR_PROFILE} is not readable JSON")
+    if via is None:
+        return config
+    if via == TOR_NAME or not profile_path(via).exists():
+        die(f"no such node to go through: {via}")
+    node = read_profile(via)
+    if node is None:
+        die(f"broken profile: {via}")
+    config["outbounds"].append({**node, "tag": VIA_TAG})
+    for rule in config.get("route", {}).get("rules", []):
+        if "user" in rule and rule.get("outbound") == "direct":
+            rule["outbound"] = VIA_TAG
+    return config
+
+
 # --- commands ---------------------------------------------------------------
 
 
@@ -1170,12 +1394,23 @@ def cmd_ls(args):
 
 def cmd_up(args):
     need_root()
-    if len(args) != 1:
-        die("usage: skvpn up <name>")
+    via = None
+    if len(args) == 3 and args[1] == "--via":
+        via = slug(args[2])
+    elif len(args) != 1:
+        die("usage: skvpn up <name> | up tor [--via <name>]")
     name = slug(args[0])
-    if not profile_path(name).exists():
+    if via is not None and name != TOR_NAME:
+        die(f"--via goes with `up {TOR_NAME}`: only Tor's own traffic has a node to go through")
+    if name == TOR_NAME:
+        need_tor()
+    elif not profile_path(name).exists():
         die(f"no such profile: {name}")
     sync(if_stale=True, fatal=False)
+    # Written after the sync, so a node it just refreshed is the one Tor goes through, and
+    # on every up, so the profile follows tor.json across a rebuild
+    if name == TOR_NAME:
+        write_profile(TOR_NAME, tor_profile(via))
     # The sync may just have pruned the very profile asked for; starting it anyway would
     # fail at the unit and still be remembered as the boot choice
     if not profile_path(name).exists():
@@ -1291,7 +1526,7 @@ def cmd_ping(args):
         print(f"  stored  {url}")
         return
     servers, args = take_flag(args, "--servers")
-    names = [slug(arg) for arg in args] or profile_names()
+    names = [slug(arg) for arg in args] or node_names()
     if not names:
         die("no profiles")
     for name in names:
@@ -1328,7 +1563,7 @@ def cmd_measure(args):
             die("usage: skvpn measure [--textfile PATH] [<name>…]")
         else:
             names.append(slug(arg))
-    names = names or profile_names()
+    names = names or node_names()
     # On a timer the textfile is the answer even with nothing to measure: it must also
     # clear the samples of a profile that is gone, and a red unit would say nothing more
     if not names and textfile is None:
@@ -1367,9 +1602,9 @@ def cmd_status(args):
     if STAMP.exists():
         age = int((time.time() - STAMP.stat().st_mtime) / 60)
         print(f"  synced    {age} min ago")
-    if args and profile_names():
+    if args and node_names():
         print()
-        print_pings(measure(profile_names()), servers)
+        print_pings(measure(node_names()), servers)
 
 
 # --- top --------------------------------------------------------------------
@@ -1589,10 +1824,12 @@ def load_base():
         die(f"no readable base at {path}")
 
 
-def sfa_config(names, active, tailscale):
+def sfa_config(names, active, tailscale, tor=False):
     """A whole config for sing-box for Android: every profile in one selector, the host's
     direct policy with its rule-sets fetched by URL, and the tailnet as an endpoint
-    when asked. The phone has no other source for any of it."""
+    when asked. The phone has no other source for any of it. With `tor`, Orbot's SOCKS
+    port is one more exit in the selector and where .onion names go: SFA runs no Tor of
+    its own, and Orbot without its VPN leaves the one VPN slot to SFA."""
     base = load_base()
     sources = rule_set_sources()
     nodes = []
@@ -1650,6 +1887,15 @@ def sfa_config(names, active, tailscale):
 
     dns_rules = []
     route_rules = [{"action": "sniff"}, {"protocol": "dns", "action": "hijack-dns"}]
+    tor_policy = policy()["tor"]
+    if tor:
+        dns_rules.append({"domain_suffix": [tor_policy["onion"]], "action": "route", "server": "onion"})
+        route_rules += [
+            # Orbot's own traffic, ahead of everything: through the `tor` exit it would
+            # be its own input. Direct, since Orbot brings its own bridges
+            {"package_name": [tor_policy["orbot"]["package"]], "outbound": "direct"},
+            {"domain_suffix": [tor_policy["onion"]], "outbound": "tor"},
+        ]
     if tailscale:
         # The server itself says which names are the tailnet's, short ones included
         dns_rules.append({"preferred_by": "tailnet", "action": "route", "server": "tailnet"})
@@ -1684,6 +1930,16 @@ def sfa_config(names, active, tailscale):
             # A phone has no search domain: `se-1` resolves only if the tailnet expands it
             "accept_search_domain": True,
         })
+    exits = list(names)
+    if tor:
+        servers.append({"tag": "onion", "type": "fakeip", "inet4_range": tor_policy["fakeip"]})
+        nodes.append({
+            "type": "socks",
+            "tag": "tor",
+            "server": "127.0.0.1",
+            "server_port": tor_policy["orbot"]["socksPort"],
+        })
+        exits.append("tor")
     config = {
         "log": {"level": "warn", "timestamp": True},
         "dns": {
@@ -1707,7 +1963,7 @@ def sfa_config(names, active, tailscale):
             {
                 "type": "selector",
                 "tag": "proxy",
-                "outbounds": names,
+                "outbounds": exits,
                 "default": active if active in names else names[0],
             },
             *nodes,
@@ -1744,13 +2000,16 @@ def cmd_export(args):
     need_root()
     sfa, args = take_flag(args, "--sfa")
     no_tailscale, args = take_flag(args, "--no-tailscale")
-    if no_tailscale and not sfa:
-        die("--no-tailscale goes with --sfa")
+    tor, args = take_flag(args, "--tor")
+    if (no_tailscale or tor) and not sfa:
+        die("--no-tailscale and --tor go with --sfa")
     if sfa:
-        names = [slug(arg) for arg in args] or profile_names()
+        names = [slug(arg) for arg in args] or node_names()
         if not names:
             die("no profiles")
         for name in names:
+            if name == TOR_NAME:
+                die(f"{TOR_NAME} is this host's own Tor — `--tor` gives the phone Orbot instead")
             if not profile_path(name).exists():
                 die(f"no such profile: {name}")
         base = load_base()
@@ -1758,10 +2017,10 @@ def cmd_export(args):
         tailscale = not no_tailscale and set(policy()["tailnet"]) <= set(
             base["inbounds"][0].get("route_exclude_address", [])
         )
-        print(json.dumps(sfa_config(names, running(), tailscale), indent=2))
+        print(json.dumps(sfa_config(names, running(), tailscale, tor), indent=2))
         return
     if len(args) > 1:
-        die("usage: skvpn export [<name>] | export --sfa [--no-tailscale] [<name>…]")
+        die("usage: skvpn export [<name>] | export --sfa [--no-tailscale] [--tor] [<name>…]")
     name = slug(args[0]) if args else running()
     if name is None:
         die("nothing is up — name the profile to export")
@@ -1820,6 +2079,7 @@ COMMANDS = {
     "top": cmd_top,
     "status": cmd_status,
     "export": cmd_export,
+    "tor": cmd_tor,
 }
 
 

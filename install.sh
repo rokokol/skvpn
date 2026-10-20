@@ -38,6 +38,11 @@ SYNC_INTERVAL=daily
 EXTRA_SETTINGS=""
 TRUSTED_USERS=()
 UNINSTALL=0
+# skvpn's own Tor, and where its binaries are: each transport plugin found joins the torrc
+# with the transports it runs
+TOR=0
+TOR_SOCKS_PORT=""
+TOR_BIN="${TOR_BIN:-/usr/bin/tor}"
 
 usage() {
   cat <<EOF
@@ -69,7 +74,13 @@ undoes what that flag installed, the way unsetting a NixOS option does on rebuil
   --guard-zone SUFFIX  a domain suffix the guard refuses; repeatable
   --guard-geosite TAG=PATH
                        a local domain rule-set the guard refuses; repeatable
-  --direct-russia      route Russian zones, geosite and geoip directly
+  --tor                run a Tor of skvpn's own: .onion names reach it from any
+                       program, and \`skvpn up tor\` sends all traffic through it; needs
+                       tor and a transport plugin (lyrebird, obfs4proxy or
+                       snowflake-client), and starts after \`skvpn tor bridges update\`
+  --tor-socks-port PORT
+                       loopback port of the SOCKS proxy Tor offers (default: 9050)
+  --direct-russia     route Russian zones, geosite and geoip directly
   --direct-china       route Chinese zones, geosite and geoip directly
   --direct-iran        route Iranian zones, geosite and geoip directly
   --direct-bittorrent  route BitTorrent directly: the clients policy.json names, and
@@ -155,6 +166,18 @@ while [[ $# -gt 0 ]]; do
       CONFIG_ARGS+=("$1")
       shift
       ;;
+    --tor)
+      TOR=1
+      shift
+      ;;
+    --tor-socks-port)
+      (($# >= 2)) || die "$1 needs a port"
+      if [[ ! "$2" =~ ^[0-9]+$ ]] || (($2 < 1 || $2 > 65535)); then
+        die "$1 needs a port: $2"
+      fi
+      TOR_SOCKS_PORT="$2"
+      shift 2
+      ;;
     --no-ipv6)
       CONFIG_ARGS+=(--no-ipv6)
       shift
@@ -235,10 +258,13 @@ if ((UNINSTALL)) && [[ "$DISCORD_VOICE" == 1 ]]; then
   die "--uninstall already removes the Discord voice fix"
 fi
 if ((UNINSTALL)) && {
-  ((${#CONFIG_ARGS[@]} || ${#BYPASS_FLAGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]})) ||
-    [[ -n "$EXTRA_SETTINGS" || "$SYNC_INTERVAL" != daily ]]
+  ((${#CONFIG_ARGS[@]} || ${#BYPASS_FLAGS[@]} || ! RESTORE || ${#TRUSTED_USERS[@]} || TOR)) ||
+    [[ -n "$EXTRA_SETTINGS" || "$SYNC_INTERVAL" != daily || -n "$TOR_SOCKS_PORT" ]]
 }; then
   die "--uninstall cannot be combined with configuration options"
+fi
+if [[ -n "$TOR_SOCKS_PORT" ]] && ((! TOR)); then
+  die "--tor-socks-port goes with --tor"
 fi
 
 root="${DESTDIR%/}$PREFIX"
@@ -260,6 +286,12 @@ bypass_command="$bypass_bin apply${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
 # The same flags for the hold, so it lets past what the TUN does
 hold_failed_command="$bypass_bin hold --if-failed${BYPASS_FLAGS[*]:+ ${BYPASS_FLAGS[*]}}"
 nft_unit="$unit_root/skvpn-nft@.service"
+tor_config="$sysconf_root/sing-box/tor.json"
+torrc_file="$sysconf_root/sing-box/torrc"
+tor_unit="$unit_root/skvpn-tor.service"
+# systemd-sysusers makes the user Tor runs as, which is what the `tor` profile tells its
+# traffic apart by; like a package's, the user outlives an uninstall
+tor_sysusers="$sysconf_root/sysusers.d/skvpn-tor.conf"
 sudoers_file="$sysconf_root/sudoers.d/skvpn"
 profile_file="$sysconf_root/profile.d/skvpn.sh"
 manifest_file="$root/share/skvpn/install-manifest"
@@ -276,6 +308,31 @@ missing=()
 sing_box_missing=0
 python3_missing=0
 nft_missing=0
+tor_missing=0
+
+# The transport plugins on this host, each as TRANSPORTS=PATH for the torrc, and each
+# transport run by the first binary that has it: lyrebird runs all three, the older
+# binaries the distributions ship one each. A staging tree has no host to look at, so it
+# names lyrebird for every transport and leaves the binary to the package
+tor_plugins=()
+if ((TOR)); then
+  covered=" "
+  for candidate in lyrebird:obfs4,webtunnel,snowflake obfs4proxy:obfs4 snowflake-client:snowflake; do
+    plugin=$(command -v "${candidate%%:*}" || true)
+    [[ -n "$plugin" ]] || continue
+    transports=""
+    IFS=, read -ra runs <<<"${candidate#*:}"
+    for transport in "${runs[@]}"; do
+      [[ "$covered" == *" $transport "* ]] && continue
+      covered+="$transport "
+      transports+="${transports:+,}$transport"
+    done
+    [[ -z "$transports" ]] || tor_plugins+=("$transports=$plugin")
+  done
+  if ((! ${#tor_plugins[@]})) && [[ -n "$DESTDIR" ]]; then
+    tor_plugins=("obfs4,webtunnel,snowflake=/usr/bin/lyrebird")
+  fi
+fi
 for command in install mktemp python3; do
   command -v "$command" >/dev/null || {
     missing+=("$command")
@@ -321,6 +378,19 @@ if ((live)); then
     fi
     if ((${#TRUSTED_USERS[@]})); then
       command -v visudo >/dev/null || missing+=("sudo/visudo")
+    fi
+    if ((TOR)); then
+      if [[ ! -x "$TOR_BIN" ]]; then
+        missing+=("tor ($TOR_BIN)")
+        tor_missing=1
+      fi
+      if ((! ${#tor_plugins[@]})); then
+        missing+=("a Tor transport plugin: lyrebird, obfs4proxy or snowflake-client")
+        tor_missing=1
+      fi
+      if ((live_sys)); then
+        command -v systemd-sysusers >/dev/null || missing+=("systemd-sysusers")
+      fi
     fi
   fi
 fi
@@ -412,8 +482,35 @@ if ((${#missing[@]})); then
           ;;
       esac
     fi
+    if ((tor_missing)); then
+      case " $distro " in
+        *" arch "*)
+          printf '\nInstall Tor on Arch/CachyOS; its transports are only in the AUR,\n'
+          printf 'as lyrebird-proxy and snowflake-pt-client:\n'
+          printf '  $ sudo pacman -S --needed tor\n'
+          ;;
+        *" debian "* | *" ubuntu "*)
+          printf '\nInstall Tor and its transports on Debian/Ubuntu:\n'
+          printf '  $ sudo apt-get update\n'
+          printf '  $ sudo apt-get install tor obfs4proxy snowflake-client\n'
+          ;;
+        *" fedora "*)
+          printf '\nInstall Tor and its obfs4 transport on Fedora:\n'
+          printf '  $ sudo dnf install tor obfs4\n'
+          ;;
+        *)
+          printf '\nInstall tor and lyrebird, obfs4proxy or snowflake-client with your package manager\n'
+          ;;
+      esac
+    fi
   } >&2
   exit 1
+fi
+
+# Debian starts a Tor of its own on install, on the same default port
+if ((TOR && live_sys)) && [[ "${TOR_SOCKS_PORT:-9050}" == 9050 ]] &&
+  systemctl is-active --quiet tor.service 2>/dev/null; then
+  echo "install.sh: the distribution's tor.service holds 127.0.0.1:9050 — stop it with \`sudo systemctl disable --now tor.service\`, or pass --tor-socks-port" >&2
 fi
 
 disable_discord_voice_fix() {
@@ -465,6 +562,7 @@ if ((UNINSTALL)); then
     systemctl disable --now skvpn-sync.timer >/dev/null
     systemctl disable skvpn-restore.service >/dev/null 2>&1 || true
     systemctl disable skvpn-guard.service >/dev/null 2>&1 || true
+    systemctl disable --now skvpn-tor.service >/dev/null 2>&1 || true
     collect_active_units
     if ((${#active_units[@]})); then
       systemctl stop "${active_units[@]}"
@@ -496,6 +594,14 @@ fi
 
 render_args=("${CONFIG_ARGS[@]}" --sing-box "$SING_BOX")
 ((live)) || render_args+=(--skip-path-check)
+if ((TOR)); then
+  render_args+=(--tor --tor-data-dir "$LOCALSTATEDIR/lib/skvpn-tor"
+    --tor-bridges "$LOCALSTATEDIR/lib/skvpn/tor-bridges.conf")
+  [[ -z "$TOR_SOCKS_PORT" ]] || render_args+=(--tor-socks-port "$TOR_SOCKS_PORT")
+  for plugin in "${tor_plugins[@]}"; do
+    render_args+=(--tor-plugin "$plugin")
+  done
+fi
 rendered_base=$(mktemp)
 temporary_files=("$rendered_base")
 temporary_dirs=()
@@ -512,6 +618,15 @@ temporary_files+=("$rendered_guard")
 python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render guard >"$rendered_guard"
 guard=0
 [[ "$(<"$rendered_guard")" == null ]] || guard=1
+rendered_tor=$(mktemp)
+rendered_torrc=$(mktemp)
+temporary_files+=("$rendered_tor" "$rendered_torrc")
+tor_user=""
+if ((TOR)); then
+  python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render tor >"$rendered_tor"
+  python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render torrc >"$rendered_torrc"
+  tor_user=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tor"]["user"])' "$here/policy.json")
+fi
 if [[ -n "$EXTRA_SETTINGS" ]]; then
   python3 -c 'import json, sys; value = json.load(open(sys.argv[1])); sys.exit(0 if isinstance(value, dict) else "extra settings must be a JSON object")' "$EXTRA_SETTINGS"
 fi
@@ -557,6 +672,7 @@ if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
     "$unit_root/skvpn-sync.timer" "$sudoers_file" "$profile_file" "$sysctl_file"
     "$guard_config" "$guard_unit" "$root/lib/skvpn/nft-bypass" "$nft_unit"
+    "$tor_config" "$torrc_file" "$tor_unit" "$tor_sysusers"
   )
   for path in "${managed_paths[@]}"; do
     [[ ! -e "$path" ]] || {
@@ -716,6 +832,54 @@ else
   rm -f "$guard_config" "$guard_unit"
 fi
 
+# Tor under a user of its own, apart from the tunnel. Without the bridges file it does not
+# start; `skvpn tor bridges update` writes the file and starts it
+if ((TOR)); then
+  install -Dm644 "$rendered_tor" "$tor_config"
+  rec "$tor_config"
+  install -Dm644 "$rendered_torrc" "$torrc_file"
+  rec "$torrc_file"
+  install -Dm644 /dev/stdin "$tor_sysusers" <<EOF
+u $tor_user - "skvpn Tor"
+EOF
+  rec "$tor_sysusers"
+  install -Dm644 /dev/stdin "$tor_unit" <<EOF
+[Unit]
+Description=Tor for skvpn: .onion names and skvpn up tor
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$LOCALSTATEDIR/lib/skvpn/tor-bridges.conf
+
+[Service]
+User=$tor_user
+Group=$tor_user
+ExecStart=$TOR_BIN -f $SYSCONFDIR/sing-box/torrc
+ExecReload=/bin/kill -HUP \$MAINPID
+# Tor refuses a DataDirectory anyone but its user can read
+StateDirectory=skvpn-tor
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=10s
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  rec "$tor_unit"
+  if ((live_sys)); then
+    systemd-sysusers "$tor_sysusers"
+  fi
+else
+  if ((live_sys)) && [[ -f "$tor_unit" ]]; then
+    systemctl disable --now skvpn-tor.service >/dev/null 2>&1 || true
+  fi
+  rm -f "$tor_config" "$torrc_file" "$tor_unit" "$tor_sysusers"
+fi
+
 if ((RESTORE)); then
   install -Dm644 /dev/stdin "$unit_root/skvpn-restore.service" <<EOF
 [Unit]
@@ -817,6 +981,11 @@ if ((live_sys)); then
     systemctl disable skvpn-guard.service >/dev/null 2>&1 || true
   fi
   systemctl enable --now skvpn-sync.timer >/dev/null
+  # A running Tor picks up a changed torrc; one without bridges stays down until it has them
+  if ((TOR)); then
+    systemctl enable skvpn-tor.service >/dev/null
+    systemctl try-restart skvpn-tor.service
+  fi
 
   # By name, and watched: a glob try-restart cannot tell a restart that took from one
   # whose instance died on the new base a second later. The CLI, units and manifest above

@@ -36,6 +36,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 
 - [Commands](#commands)
 - [How it is put together](#how-it-is-put-together)
+  - [Tor](#tor) — `.onion` sites from any program, a SOCKS port, and all traffic through Tor
   - [A phone](#a-phone) — the same profiles and policy on Android, in a few steps
 - [NixOS module](#nixos-module)
 - [Completions](#completions)
@@ -52,6 +53,7 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn rm <name>…` | delete profiles; the running one is refused |
 | `skvpn ls [--names \| --servers]` | list profiles; `--names` prints bare names and needs no root; `--servers` adds each node's address, kept out of the table otherwise |
 | `skvpn up <name>` | sync if stale, [hold](#hold) the network, stop the active profile, start this one, remember it for boot |
+| `skvpn up tor [--via <name>]` | send everything that would go to a node through [Tor](#tor) instead; Tor itself leaves direct through its bridges, or through the named node with `--via` |
 | `skvpn down [--no-guard]` | stop the active profile and forget the boot choice; with a [guard](#guard) configured, hold the network and start it, or with `--no-guard` leave everything off and let a hold go |
 | `skvpn restart` | hold the network and start the active profile over on the base as it is now — how a changed split list gets onto the wire; with only the guard up, the guard |
 | `skvpn restore` | start the profile chosen for boot — the boot-time half of `up`; the guard when there is nothing to bring back |
@@ -67,7 +69,10 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn top [--count N]` | live speed through the tunnel, from the running sing-box; needs the [monitor](#top) option; `d` measures a download through the tunnel; piped, it prints a line a second |
 | `skvpn status` | the active profile or the running guard, the boot choice (only while boot restore is enabled), the age of the last sync |
 | `skvpn export [<name>]` | the config a profile runs with here — the base, the split list and the profile merged by sing-box itself; the running profile when none is named |
-| `skvpn export --sfa [--no-tailscale] [<name>…]` | a whole config for [a phone](#a-phone) |
+| `skvpn export --sfa [--no-tailscale] [--tor] [<name>…]` | a whole config for [a phone](#a-phone); `--tor` adds Orbot as one more exit and as the way to `.onion` sites |
+| `skvpn tor [status]` | the state of skvpn's [Tor](#tor): the unit, how far it has bootstrapped, its bridges and its SOCKS address |
+| `skvpn tor bridges [ls]` | the bridges Tor has, by kind, with their country and age; no root |
+| `skvpn tor bridges update [--country CC]` | fetch fresh bridges from the Tor Project's Moat service and reload Tor; the country follows the preset the base routes direct |
 
 Everything that writes or talks to systemd needs root, and so do `ping`, `measure` and `top` (the profiles and the API secret are root-only); `ls --names`, `status`, `split ls` and a bare `boot` do not
 
@@ -85,6 +90,9 @@ Everything that writes or talks to systemd needs root, and so do `ping`, `measur
 /etc/sing-box/base.d/60-clash.json  the Clash API for `skvpn top` — written at start by the NixOS `monitor` option, never by hand
 /var/lib/skvpn/clash-secret         that API's secret, root-only
 share/skvpn/policy.json             presets, the tailnet and the rule-sets' sources — installed beside the CLI
+/etc/sing-box/tor.json              the sing-box half of the `tor` profile, when Tor is on
+/etc/sing-box/torrc                 Tor's own config — rendered with tor.json
+/var/lib/skvpn/tor-bridges.conf     Tor's bridges — written by `skvpn tor bridges update`
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default
 /var/lib/skvpn/boot                 a profile pinned for boot by `skvpn boot`, beating the above
@@ -135,6 +143,20 @@ A switch stops one sing-box and starts another, and in between traffic would lea
 
 Still let out: loopback, replies to inbound connections, DHCP, private addresses, and what `tailscale.enable` and `syncthing.enable` keep past the TUN, so `ssh` over the tailnet reaches a held host. Not held: boot, a NixOS rebuild that restarts the tunnel, `systemctl` typed by hand, and traffic the host forwards for containers
 
+### Tor
+
+With `tor.enable` on NixOS, or `--tor` for the installer, skvpn runs a Tor of its own beside the tunnel. A profile switch never touches it, so it does not bootstrap again on every `up`. It gives three things:
+
+- `.onion` sites open from any program, with no proxy set up: the base hands their names a fake address and routes the connection to Tor, whatever profile or guard runs
+- a SOCKS port on loopback, for Tor Browser or any program set up for a proxy
+- `skvpn up tor`, the `tor` profile: everything that would go to a node goes through Tor instead, a way out for when every node is down. `--via <name>` takes Tor's own traffic through that node instead of direct
+
+Tor reaches the network through bridges only, and starts once `skvpn tor bridges update` has fetched them from the Tor Project. The country of the bridges is the one whose preset the base routes direct, so a host with the Russian preset gets bridges meant for Russia; with no preset or with several, `--country` names it. Bridges are never replaced behind your back: an update is a command you run when the ones you have stop working
+
+The `tor` profile is a fallback, not anonymity. Only TCP goes through Tor, so calls, games and other UDP stop working, and QUIC falls back to TCP. Direct zones and the split list still leave direct, as with any profile. Each site gets a circuit of its own, but an account you are logged in to names you whatever the circuit: the profile hides your address, not who you are. For anonymity use Tor Browser on the SOCKS port
+
+`tor` is the profile's reserved name, so a share link or a subscription entry called `tor` is skipped. `ping`, `measure` and `export --sfa` leave it out unless it is named
+
 ### A phone
 
 1. Install sing-box for Android (SFA) from the [Play Store](https://play.google.com/store/apps/details?id=io.nekohasekai.sfa), [F-Droid](https://f-droid.org/packages/io.nekohasekai.sfa/) or the [releases](https://github.com/SagerNet/sing-box/releases)
@@ -147,6 +169,8 @@ Still let out: loopback, replies to inbound connections, DHCP, private addresses
 8. To be "off" while keeping the guarded sites refused, switch the mode card on the Dashboard from Rule to Direct; stopping SFA turns everything off
 
 To update the phone after the subscription or the policy changes, run step 2 again and import the new file over the old profile
+
+For Tor on the phone, install [Orbot](https://orbot.app/), turn on Settings → Power User Mode so that it runs as a proxy without a VPN of its own, start it, and export with `--tor`. The selector then has a `tor` exit beside the nodes, and `.onion` sites go to Orbot from every app. Orbot's own traffic leaves direct, and Orbot fetches its own bridges
 
 `sudo skvpn export --sfa` writes one config for [sing-box for Android](https://sing-box.sagernet.org/clients/android/) that carries the host's policy to the phone. Every profile, or the named ones, sits in one group the app switches between on the fly. Sites the host sends direct go direct here too, with the rule-sets fetched through the node by URL; process entries of the split list stay behind, since they name the host's programs. The LAN stays outside the tunnel, so devices there still reach the phone. When the host runs Tailscale, the phone joins the tailnet from inside the same app, since Android lets only one VPN run at a time; the app shows the login link under Tools → Endpoints. When the host has a guard, the app gets a Direct mode beside the usual Rule one: switching to it sends everything direct but keeps refusing the guarded sites, which is the phone's way of being off. The file carries the nodes' credentials, so move it the way you would move a password
 
@@ -195,6 +219,9 @@ The module owns the mechanism — the `sing-box@` template unit, boot restore, t
 | `docker.enable` | follows `virtualisation.docker.enable` | keep Docker bridges out of the TUN: follow the configured default bridge name, bypass dynamic `br-*` interfaces in nftables, and exclude `virtualisation.docker.daemon.settings.default-address-pools` from TUN routes |
 | `syncthing.enable` | follows `services.syncthing.enable` | keep Syncthing's QUIC on the port its peers know |
 | `extraSettings` | `{ }` | a second `base.d` file, merged by sing-box's own rules: objects merge, arrays append, and a scalar the base already sets stays the base's ([PITFALLS.md](PITFALLS.md)) |
+| `tor.enable` | `false` | run skvpn's own [Tor](#tor): `.onion` sites from any program, a SOCKS port and the `tor` profile |
+| `tor.socksPort` | see the module | the loopback port of the SOCKS proxy Tor offers programs |
+| `tor.package`, `tor.transportPackage` | `pkgs.tor`, `pkgs.obfs4` | the Tor that runs, and the package whose `lyrebird` runs its transports |
 | `trustedUsers` | `[ ]` | run `skvpn` without typing sudo: a NOPASSWD rule for exactly this command plus a system-wide `skvpn = "sudo skvpn"` alias |
 | `restore.enable` | `true` | bring the last active profile back on boot |
 | `sync.interval` | `"daily"` | `OnCalendar` for the subscription refresh |
@@ -238,7 +265,7 @@ The Arch package supplies the binary, service user and template unit. The instal
 
 Debian and Ubuntu use the [official sing-box APT repository](https://sing-box.sagernet.org/installation/package-manager/#repository-installation). Its package supplies the same binary, template unit and service user expected by the installer. A preflight checks all runtime dependencies before writing files and prints distro-specific guidance when anything is missing — every runnable line as `$ command`, exactly what to type; nothing is ever installed on your behalf
 
-The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--syncthing`, `--guard-ai`, repeatable `--guard-zone` and `--guard-geosite TAG=PATH`, `--direct-russia`, `--direct-china`, `--direct-iran`, `--direct-bittorrent`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. Country presets use the official Arch rule-set packages:
+The NixOS policy options have matching installer flags: `--tailscale`, `--docker`, `--syncthing`, `--tor`, `--tor-socks-port`, `--guard-ai`, repeatable `--guard-zone` and `--guard-geosite TAG=PATH`, `--direct-russia`, `--direct-china`, `--direct-iran`, `--direct-bittorrent`, repeatable `--direct-zone`, `--direct-geosite TAG=PATH` and `--direct-geoip TAG=PATH`, repeatable `--split [name|path|ip|domain] VALUE` (the kind defaults to `name`; a process literally called `ip` is `--split name ip`), `--tun-interface`, repeatable `--tun-address`, `--no-ipv6`, `--stack`, `--dns-server`, `--extra-settings`, `--no-restore`, `--sync-interval` and repeatable `--trusted-user`. `--tor` needs Tor and a transport for it — `lyrebird`, or the older `obfs4proxy` and `snowflake-client` that Debian, Ubuntu and Fedora ship — and the preflight names the packages; on Arch the transports come only from the AUR. Country presets use the official Arch rule-set packages:
 
 ```sh
 sudo pacman -S sing-geoip-rule-set sing-geosite-rule-set

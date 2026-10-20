@@ -170,6 +170,72 @@ let
     };
   };
 
+  # skvpn's own Tor, from the constants policy.json holds for the CLI and the renderer too
+  tor = policy.tor;
+  torLocal = {
+    server = "127.0.0.1";
+    server_port = tor.routePort;
+  };
+  torBridges = "/var/lib/skvpn/tor-bridges.conf";
+  torUser = [ tor.user ];
+
+  # The sing-box half of the `tor` profile, which `skvpn up tor` copies into the profiles:
+  # `proxy` is Tor's SOCKS, and Tor's own traffic, matched by its user, leaves direct — or
+  # through the node `--via` puts in place of `direct` — rather than back into itself.
+  # Names go to Tor's DNSPort, except Tor's own, which it needs before it can resolve
+  # anything: a transport looks up its broker's name before the first circuit exists
+  torProfile = {
+    outbounds = [
+      (
+        {
+          type = "socks";
+          tag = "proxy";
+        }
+        // torLocal
+      )
+    ];
+    dns = {
+      servers = [
+        {
+          tag = "tor";
+          type = "udp";
+          server = "127.0.0.1";
+          server_port = tor.dnsPort;
+        }
+      ];
+      rules = [
+        {
+          user = torUser;
+          action = "route";
+          server = "bootstrap";
+        }
+        {
+          action = "route";
+          server = "tor";
+        }
+      ];
+    };
+    route.rules = [
+      {
+        user = torUser;
+        outbound = "direct";
+      }
+    ];
+  };
+
+  # The second SOCKS port is the one sing-box dials, isolating by destination so two sites
+  # never share a circuit; the first is the user's. The bridges file is CLI state, written
+  # by `skvpn tor bridges update`
+  torrc = ''
+    DataDirectory /var/lib/skvpn-tor
+    SocksPort 127.0.0.1:${toString cfg.tor.socksPort}
+    SocksPort 127.0.0.1:${toString tor.routePort} IsolateDestAddr
+    DNSPort 127.0.0.1:${toString tor.dnsPort}
+    ClientTransportPlugin ${lib.concatStringsSep "," tor.transports} exec ${lib.getExe' cfg.tor.transportPackage "lyrebird"}
+    UseBridges 1
+    %include ${torBridges}
+  '';
+
   # The Clash API file for `skvpn top`, written at every start by root. It cannot be an
   # etc entry: the secret would sit in the world-readable store. The secret lives in a
   # root-only file and is made once; base.d gets a copy only the sing-box group reads, and
@@ -267,11 +333,23 @@ let
           detour = "proxy";
           domain_resolver = "bootstrap";
         }
-      ];
+      ]
+      ++ lib.optional cfg.tor.enable {
+        tag = "onion";
+        type = "fakeip";
+        inet4_range = tor.fakeip;
+      };
+      # A .onion name gets an address from the fake range, and the connection to it carries
+      # the name back, which a route rule sends to Tor; no resolver knows these names.
       # Direct names resolve outside the tunnel too, or the answer is geo-wrong and the
       # query travels to a node that may refuse to carry it
       rules =
-        lib.optional (directZones != [ ]) {
+        lib.optional cfg.tor.enable {
+          domain_suffix = [ tor.onion ];
+          action = "route";
+          server = "onion";
+        }
+        ++ lib.optional (directZones != [ ]) {
           domain_suffix = directZones;
           action = "route";
           server = "bootstrap";
@@ -338,20 +416,35 @@ let
         type = "direct";
         tag = "direct";
       }
-    ];
+    ]
+    # The port that isolates by destination, so two sites never share one circuit
+    ++ lib.optional cfg.tor.enable (
+      {
+        type = "socks";
+        tag = "tor";
+      }
+      // torLocal
+    );
 
     route = {
       auto_detect_interface = true;
       default_domain_resolver = "bootstrap";
 
       # hijack-dns before ip_is_private: the TUN's own DNS address is private and would be
-      # lost
+      # lost. .onion ahead of every direct rule: a connection that fell through to one of
+      # them would leave in the clear and fail
       rules = [
         { action = "sniff"; }
         {
           protocol = "dns";
           action = "hijack-dns";
         }
+      ]
+      ++ lib.optional cfg.tor.enable {
+        domain_suffix = [ tor.onion ];
+        outbound = "tor";
+      }
+      ++ [
         {
           ip_is_private = true;
           outbound = "direct";
@@ -716,6 +809,30 @@ in
       };
     };
 
+    tor = {
+      enable = lib.mkEnableOption "" // {
+        description = ''
+          Run a Tor of skvpn's own, apart from the tunnel, so a profile switch never makes
+          it bootstrap again. `.onion` names reach it from any program through the TUN, its
+          SOCKS port serves programs set up for one, and `skvpn up tor` sends all traffic
+          that would go to a node through it. It reaches the network through bridges only,
+          and starts once `skvpn tor bridges update` has fetched them
+        '';
+      };
+
+      socksPort = lib.mkOption {
+        type = lib.types.port;
+        default = tor.socksPort;
+        description = "Loopback port of the SOCKS proxy Tor offers programs set up for one";
+      };
+
+      package = lib.mkPackageOption pkgs "tor" { };
+
+      transportPackage = lib.mkPackageOption pkgs "obfs4" { } // {
+        description = "The package whose `lyrebird` runs the obfs4, webtunnel and snowflake transports";
+      };
+    };
+
     trustedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -768,6 +885,11 @@ in
     # start the guard on `down`
     // lib.optionalAttrs guardEnabled {
       "sing-box/guard.json".text = builtins.toJSON guardConfig;
+    }
+    # Outside base.d too; tor.json's presence is how the CLI knows there is a Tor
+    // lib.optionalAttrs cfg.tor.enable {
+      "sing-box/tor.json".text = builtins.toJSON torProfile;
+      "sing-box/torrc".text = torrc;
     };
 
     # Written by root, contents read by the service user; the directory itself lists for
@@ -813,6 +935,43 @@ in
         };
       }
     );
+
+    # Tor under a user of its own, which is what the `tor` profile tells its traffic apart
+    # by. Without the bridges file it does not start; `skvpn tor bridges update` writes the
+    # file and starts it, and a later update reloads it
+    systemd.services.skvpn-tor = lib.mkIf cfg.tor.enable {
+      description = "Tor for skvpn: .onion names and `skvpn up tor`";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      unitConfig.ConditionPathExists = torBridges;
+      restartTriggers = [ torrc ];
+
+      serviceConfig = {
+        User = tor.user;
+        Group = tor.user;
+        ExecStart = "${lib.getExe cfg.tor.package} -f /etc/sing-box/torrc";
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+        # Tor refuses a DataDirectory anyone but its user can read
+        StateDirectory = "skvpn-tor";
+        StateDirectoryMode = "0700";
+        Restart = "on-failure";
+        RestartSec = "10s";
+        CapabilityBoundingSet = "";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
+      };
+    };
 
     # The CLI's way to the hold: skvpn-nft@hold before a switch, skvpn-nft@release for off.
     # A unit because the flags are the policy, and the policy lives here
@@ -926,6 +1085,12 @@ in
       home = "/var/lib/sing-box";
     };
     users.groups.sing-box = { };
+
+    users.users.${tor.user} = lib.mkIf cfg.tor.enable {
+      isSystemUser = true;
+      group = tor.user;
+    };
+    users.groups.${tor.user} = lib.mkIf cfg.tor.enable { };
 
     # TUN replies arrive on the TUN interface but route via the LAN link, so a strict
     # rpfilter drops every UDP answer

@@ -209,6 +209,16 @@ let
     };
   };
 
+  torOn = eval {
+    services.skvpn = {
+      enable = true;
+      tor = {
+        enable = true;
+        socksPort = 19050;
+      };
+    };
+  };
+
   off = eval { };
 
   broken = config: map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
@@ -275,6 +285,17 @@ in
       bare.systemd.services."sing-box@".serviceConfig.ExecStartPre;
   monitorGuardScript = lib.removePrefix "+" guardOn.systemd.services.skvpn-guard.serviceConfig.ExecStartPre;
   monitorEtc = lib.attrNames monitorOn.environment.etc;
+
+  torBase = torOn.environment.etc."sing-box/base.d/00-base.json".text;
+  torProfile = torOn.environment.etc."sing-box/tor.json".text;
+  torrc = torOn.environment.etc."sing-box/torrc".text;
+  torUnit = {
+    inherit (torOn.systemd.services.skvpn-tor) wantedBy serviceConfig;
+    unitConfig = torOn.systemd.services.skvpn-tor.unitConfig or { };
+  };
+  torUsers = lib.attrNames torOn.users.users;
+  # The lyrebird the torrc runs, for the parity check to hand the renderer the same path
+  torLyrebird = lib.getExe' torOn.services.skvpn.tor.transportPackage "lyrebird";
 
   offEtc = lib.attrNames off.environment.etc;
   offPackages = off.environment.systemPackages;

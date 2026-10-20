@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stands in for the tool that makes the Tor user, which would make a real one on the
+# developer's machine; records the call in the systemctl log, beside the units it goes with
+set -euo pipefail
+
+printf 'systemd-sysusers %s\n' "$*" >>"${SYSTEMCTL_LOG:?}"

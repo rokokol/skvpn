@@ -35,6 +35,15 @@ declare -A IMAGE=(
 INSTALL_FLAGS=(--no-systemd --docker --tailscale --syncthing --guard-zone example.org --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
 UNINSTALL_FLAGS=(--no-systemd)
 
+# Tor where the distribution packages a transport for it: Arch has none outside the AUR,
+# so its preflight could only print guidance nobody can run unattended
+declare -A TOR_FLAGS=(
+  [debian]=--tor
+  [ubuntu]=--tor
+  [arch]=""
+  [fedora]=--tor
+)
+
 # Bootstrap: only what the harness itself needs in a minimal image — never a dependency
 # the preflight's guidance is supposed to provide, or the guidance test would pass
 # because the answer was planted. Two kinds live here: the package manager's own
@@ -444,6 +453,7 @@ fi
 # ======================================================================================
 
 distro="$2"
+[[ -z "${TOR_FLAGS[$distro]}" ]] || INSTALL_FLAGS+=("${TOR_FLAGS[$distro]}")
 
 say() { printf '\n  -- %s\n' "$1"; }
 die() {
@@ -517,6 +527,20 @@ version_out=$("$bin_path" --version)
   die "--version does not match VERSION: $version_out"
 ./install.sh --help >/dev/null || die "--help failed"
 smoke "$prefix" || die "smoke test failed"
+
+if [[ -n "${TOR_FLAGS[$distro]}" ]]; then
+  say "the distribution's sing-box and tor accept the Tor configuration"
+  # The fake range, the user rule and the DNSPort server are fields an older sing-box
+  # would refuse, and then the whole base with them
+  sing-box check -C /etc/sing-box/base.d -c /etc/sing-box/tor.json ||
+    die "sing-box refused the base with the tor profile"
+  # Tor refuses UseBridges with no bridge, and the CLI writes them only on request
+  mkdir -p /var/lib/skvpn
+  printf 'Bridge obfs4 192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=AAAA iat-mode=0\n' \
+    >/var/lib/skvpn/tor-bridges.conf
+  tor --verify-config -f /etc/sing-box/torrc >/dev/null || die "tor refused the torrc"
+  rm /var/lib/skvpn/tor-bridges.conf
+fi
 
 say "Docker-in-Docker reaches Ubuntu repositories through the active TUN"
 bash -c "${DIND_INSTALL[$distro]}" >/dev/null

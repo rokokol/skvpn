@@ -35,6 +35,20 @@
     "tag": "ai",
     "geosite": "geosite-category-ai-!cn.srs"
   },
+  "tor": {
+    "user": "skvpn-tor",
+    "socksPort": 9050,
+    "routePort": 9060,
+    "dnsPort": 9061,
+    "onion": ".onion",
+    "fakeip": "198.18.0.0/15",
+    "moat": "https://bridges.torproject.org/moat/circumvention/settings",
+    "transports": ["obfs4", "webtunnel", "snowflake"],
+    "orbot": {
+      "package": "org.torproject.android",
+      "socksPort": 9050
+    }
+  },
   "bittorrent": {
     "clients": [
       "fragments",

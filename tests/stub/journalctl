@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Stands in for the journal the installer prints after a failed restart; records the call
+# Stands in for the journal the installer prints after a failed restart, and for the Tor
+# log `skvpn tor` reads its bootstrap from: FAKE_JOURNAL is that log. Records the call
 set -euo pipefail
 
 printf '%s\n' "$*" >>"${JOURNALCTL_LOG:?}"
-printf 'journal (stub): %s\n' "$*"
+if [[ -n "${FAKE_JOURNAL:-}" ]]; then
+  printf '%s\n' "$FAKE_JOURNAL"
+else
+  printf 'journal (stub): %s\n' "$*"
+fi

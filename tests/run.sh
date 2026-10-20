@@ -82,6 +82,8 @@ world() {
   unset SYSTEMCTL_FAIL
   unset FAKE_DELAYS
   unset SING_BOX_FAIL
+  unset FAKE_TOR_STATE
+  unset FAKE_JOURNAL
   # What `measure` and `top` add: the curl stub's log and its answers, the UDP resolver
   # behind each exit, and the live instance's traffic stream
   export CURL_LOG="$SKVPN_ROOT/curl.log"
@@ -100,6 +102,8 @@ sv() { python3 "$SKVPN" "$@"; }
 
 profile() { printf '%s/etc/sing-box/profiles/%s.json' "$SKVPN_ROOT" "$1"; }
 active_file() { printf '%s/var/lib/skvpn/active' "$SKVPN_ROOT"; }
+# A Tor constant from policy.json, which the renderers and the CLI read too
+tor_policy() { jq -r ".tor.$1" "$REPO/policy.json"; }
 
 echo "parsers"
 
@@ -1861,7 +1865,7 @@ missing=""
 for option in help version prefix destdir uninstall no-systemd tailscale docker syncthing \
   guard-ai guard-zone guard-geosite direct-russia direct-china direct-iran direct-bittorrent direct-zone direct-geosite \
   direct-geoip split tun-interface tun-address dns-server extra-settings no-restore sync-interval \
-  trusted-user fix-discord-voice stack no-ipv6; do
+  trusted-user fix-discord-voice stack no-ipv6 tor tor-socks-port; do
   [[ "$help" == *"--$option"* ]] || missing+=" $option"
 done
 if [[ -z "$missing" ]]; then
@@ -2190,6 +2194,132 @@ else
   fail "boot wants the guard beside restore, misses it without, or uninstall leaves it"
 fi
 
+# A transport plugin is any executable of that name on PATH; these do nothing
+fake_plugins() {
+  mkdir -p "$SKVPN_ROOT/plugins"
+  for plugin in "$@"; do
+    printf '#!/bin/sh\n' >"$SKVPN_ROOT/plugins/$plugin"
+    chmod +x "$SKVPN_ROOT/plugins/$plugin"
+  done
+}
+
+# The same pair the module renders, and one plugin line per binary found: lyrebird runs
+# every transport, so nothing older is run beside it
+world installer-renders-tor-from-the-plugins-found
+fake_plugins obfs4proxy snowflake-client
+PATH="$SKVPN_ROOT/plugins:$PATH" "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor --tor-socks-port 19050 >/dev/null
+torrc="$(guard_stage sing-box/torrc)"
+plugins=$(grep '^ClientTransportPlugin' "$torrc" 2>/dev/null || true)
+fake_plugins lyrebird
+PATH="$SKVPN_ROOT/plugins:$PATH" "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor >/dev/null
+with_lyrebird=$(grep '^ClientTransportPlugin' "$torrc" 2>/dev/null || true)
+unit="$(guard_stage systemd/system/skvpn-tor.service)"
+user=$(tor_policy user)
+if [[ "$plugins" == "ClientTransportPlugin obfs4 exec $SKVPN_ROOT/plugins/obfs4proxy"$'\n'"ClientTransportPlugin snowflake exec $SKVPN_ROOT/plugins/snowflake-client" &&
+  "$with_lyrebird" == "ClientTransportPlugin obfs4,webtunnel,snowflake exec $SKVPN_ROOT/plugins/lyrebird" ]] &&
+  grep -qx 'DataDirectory /var/lib/skvpn-tor' "$torrc" &&
+  grep -qx '%include /var/lib/skvpn/tor-bridges.conf' "$torrc" &&
+  jq -e --slurpfile want <(python3 "$REPO/non-nix/render-base.py" --skip-path-check --tor \
+    --tor-plugin obfs4=/x --render tor) '. == $want[0]' "$(guard_stage sing-box/tor.json)" >/dev/null &&
+  jq -e --arg o "$(tor_policy onion)" '.route.rules | any(.domain_suffix == [$o] and .outbound == "tor")' \
+    "$(guard_stage sing-box/base.d/00-base.json)" >/dev/null &&
+  grep -qx 'ExecStart=/usr/bin/tor -f /etc/sing-box/torrc' "$unit" &&
+  grep -qx "User=$user" "$unit" &&
+  grep -qx 'ConditionPathExists=/var/lib/skvpn/tor-bridges.conf' "$unit" &&
+  grep -qx "u $user - \"skvpn Tor\"" "$(guard_stage sysusers.d/skvpn-tor.conf)" &&
+  grep -q 'skvpn-tor.service' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
+  ok
+else
+  fail "the installer's Tor drifted from the renderer's, ran a transport twice, or cannot start"
+fi
+
+world installer-drops-tor-without-its-flag
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor >/dev/null
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
+if [[ ! -e "$(guard_stage sing-box/tor.json)" && ! -e "$(guard_stage sing-box/torrc)" &&
+! -e "$(guard_stage systemd/system/skvpn-tor.service)" && ! -e "$(guard_stage sysusers.d/skvpn-tor.conf)" ]] &&
+  ! grep -qE 'skvpn-tor|/torrc$|/tor\.json$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
+  jq -e '.outbounds | all(.tag != "tor")' "$(guard_stage sing-box/base.d/00-base.json)" >/dev/null; then
+  ok
+else
+  fail "a run without --tor left Tor behind"
+fi
+
+world installer-refuses-tor-options-alone
+rc=0
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor-socks-port 9150 >/dev/null 2>&1 || rc=$?
+rc_uninstall=0
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --uninstall --tor >/dev/null 2>&1 || rc_uninstall=$?
+rc_port=0
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor --tor-socks-port 70000 >/dev/null 2>&1 || rc_port=$?
+if ((rc == 2 && rc_uninstall == 2 && rc_port == 2)); then
+  ok
+else
+  fail "a Tor option without --tor, beside --uninstall or out of range did not exit 2: $rc $rc_uninstall $rc_port"
+fi
+
+# Tor and every transport missing: named, and each distribution's guidance printed whole
+world installer-reports-a-missing-tor
+printf 'ID=ubuntu\nID_LIKE=debian\n' >"$SKVPN_ROOT/os-release-ID=ubuntu"
+printf 'ID=fedora\n' >"$SKVPN_ROOT/os-release-ID=fedora"
+printf 'ID=arch\n' >"$SKVPN_ROOT/os-release-ID=arch"
+tor_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "TOR_BIN=$SKVPN_ROOT/missing-tor"
+)
+outs=()
+for distro in ID=ubuntu ID=fedora ID=arch; do
+  rc=0
+  outs+=("$(env "${tor_env[@]}" "OS_RELEASE=$SKVPN_ROOT/os-release-$distro" "$REPO/install.sh" \
+    --prefix "$SKVPN_ROOT/usr" --no-systemd --tor 2>&1)") || rc=$?
+  ((rc == 1)) || outs[-1]="exit $rc"
+done
+if [[ "${outs[0]}" == *"tor ($SKVPN_ROOT/missing-tor)"* && "${outs[0]}" == *"a Tor transport plugin"* ]] &&
+  grep -qxF '  $ sudo apt-get install tor obfs4proxy snowflake-client' <<<"${outs[0]}" &&
+  grep -qxF '  $ sudo dnf install tor obfs4' <<<"${outs[1]}" &&
+  grep -qxF '  $ sudo pacman -S --needed tor' <<<"${outs[2]}" && [[ "${outs[2]}" == *lyrebird-proxy* ]] &&
+  [[ ! -e "$SKVPN_ROOT/usr/bin/skvpn" ]]; then
+  ok
+else
+  fail "the preflight let a missing Tor through, or lost a distribution's guidance: ${outs[*]}"
+fi
+
+# Live: the user is made, the unit enabled and a running Tor restarted onto the new torrc;
+# uninstall stops it and leaves nothing of it behind
+world installer-enables-tor-and-uninstall-stops-it
+fake_plugins lyrebird
+tor_env=(
+  "SYSCONFDIR=$SKVPN_ROOT/etc"
+  "LOCALSTATEDIR=$SKVPN_ROOT/var"
+  "SYSTEMD_UNITDIR=$SKVPN_ROOT/systemd"
+  "SING_BOX=$(command -v python3)"
+  "NFT=$(command -v python3)"
+  "TOR_BIN=$(command -v python3)"
+  "SERVICE_USER=$(id -un)"
+  "SERVICE_GROUP=$(id -gn)"
+  "PROFILES_OWNER=$(id -un)"
+  "PROFILES_MODE=755"
+  "RESTART_SETTLE_TICKS=0"
+  "PATH=$SKVPN_ROOT/plugins:$PATH"
+)
+env "${tor_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --tor >/dev/null
+mv "$SYSTEMCTL_LOG" "$SKVPN_ROOT/install.log"
+env "${tor_env[@]}" "$REPO/install.sh" --prefix "$SKVPN_ROOT/usr" --uninstall >/dev/null
+if grep -qx "systemd-sysusers $SKVPN_ROOT/etc/sysusers.d/skvpn-tor.conf" "$SKVPN_ROOT/install.log" &&
+  grep -qx 'enable skvpn-tor.service' "$SKVPN_ROOT/install.log" &&
+  grep -qx 'try-restart skvpn-tor.service' "$SKVPN_ROOT/install.log" &&
+  grep -qx 'disable --now skvpn-tor.service' "$SYSTEMCTL_LOG" &&
+  [[ ! -e "$SKVPN_ROOT/systemd/skvpn-tor.service" && ! -e "$SKVPN_ROOT/etc/sing-box/torrc" ]]; then
+  ok
+else
+  fail "a live install did not make the Tor user and enable its unit, or uninstall left Tor running"
+fi
+
 # --no-systemd is a real install that must not say a word to systemd; the stub log is
 # the whole record of what would have been said
 world no-systemd-install-stays-silent-toward-systemd
@@ -2317,6 +2447,256 @@ elif [[ "$(<"$base")" == "$base_before" &&
   ok
 else
   fail "the previous base was not restored, the instance not restarted onto it, or the journal not shown"
+fi
+
+echo "tor"
+
+# The base, the torrc and tor.json the way the installer renders them, from one set of
+# options; the transports are the ones this Tor can run, and the request must not ask
+# for more. A preset is what names the bridges' country
+tor_on() {
+  local conf="$SKVPN_ROOT/etc/sing-box" render=(python3 "$REPO/non-nix/render-base.py" --skip-path-check
+    --tor --tor-plugin "obfs4,snowflake=/usr/bin/lyrebird" "$@")
+  mkdir -p "$conf/base.d"
+  "${render[@]}" >"$conf/base.d/00-base.json"
+  "${render[@]}" --render tor >"$conf/tor.json"
+  "${render[@]}" --render torrc >"$conf/torrc"
+}
+bridges_file() { printf '%s/var/lib/skvpn/tor-bridges.conf' "$SKVPN_ROOT"; }
+
+# Moat on loopback: answers every POST with $SKVPN_ROOT/moat.json and logs its body
+moat_up() {
+  "$HERE/moat-server.py" "$SKVPN_ROOT/moat.bodies" "$SKVPN_ROOT/moat.json" >"$SKVPN_ROOT/moat.port" &
+  MOAT_PID=$!
+  for _ in $(seq 50); do
+    [[ -s "$SKVPN_ROOT/moat.port" ]] && break
+    sleep 0.1
+  done
+  SKVPN_MOAT_URL="http://127.0.0.1:$(<"$SKVPN_ROOT/moat.port")/moat/circumvention/settings"
+  export SKVPN_MOAT_URL
+}
+moat_down() {
+  kill "$MOAT_PID" 2>/dev/null || true
+  wait "$MOAT_PID" 2>/dev/null || true
+  unset SKVPN_MOAT_URL
+}
+moat_answer() {
+  cat >"$SKVPN_ROOT/moat.json" <<'EOF'
+{"settings": [
+  {"bridges": {"type": "snowflake", "source": "bridgedb", "bridge_strings": ["snowflake 192.0.2.3:80 AAAA url=https://broker.example/"]}},
+  {"bridges": {"type": "webtunnel", "source": "bridgedb", "bridge_strings": ["webtunnel [2001:db8::1]:443 BBBB url=https://wt.example/x"]}},
+  {"bridges": {"type": "obfs4", "source": "bridgedb", "bridge_strings": ["obfs4 198.51.100.7:443 CCCC cert=xyz iat-mode=0", "obfs4 198.51.100.8:443 DDDD cert=abc iat-mode=0"]}}
+]}
+EOF
+}
+
+world tor-base-sends-onion-names-to-tor
+tor_on
+base="$SKVPN_ROOT/etc/sing-box/base.d/00-base.json"
+python3 "$REPO/non-nix/render-base.py" --skip-path-check >"$SKVPN_ROOT/plain.json"
+if jq -e --arg o "$(tor_policy onion)" --arg f "$(tor_policy fakeip)" --argjson p "$(tor_policy routePort)" '
+    (.dns.servers | any(.tag == "onion" and .type == "fakeip" and .inet4_range == $f)) and
+    .dns.rules[0] == {"domain_suffix": [$o], "action": "route", "server": "onion"} and
+    (.outbounds | any(. == {"type": "socks", "tag": "tor", "server": "127.0.0.1", "server_port": $p})) and
+    (.route.rules | (map(.domain_suffix == [$o] and .outbound == "tor") | index(true)) as $tor |
+      (map(.ip_is_private == true) | index(true)) as $private | $tor != null and $tor < $private)' \
+  "$base" >/dev/null &&
+  jq -e '(.outbounds | all(.tag != "tor")) and (.dns.servers | all(.tag != "onion"))' "$SKVPN_ROOT/plain.json" >/dev/null; then
+  ok
+else
+  fail "the base did not send .onion names to Tor ahead of the private-address rule, or did so without --tor"
+fi
+
+world torrc-carries-ports-transports-and-bridges
+tor_on
+torrc="$SKVPN_ROOT/etc/sing-box/torrc"
+if grep -qx "SocksPort 127.0.0.1:$(tor_policy socksPort)" "$torrc" &&
+  grep -qx "SocksPort 127.0.0.1:$(tor_policy routePort) IsolateDestAddr" "$torrc" &&
+  grep -qx "DNSPort 127.0.0.1:$(tor_policy dnsPort)" "$torrc" &&
+  grep -qx 'ClientTransportPlugin obfs4,snowflake exec /usr/bin/lyrebird' "$torrc" &&
+  grep -qx 'UseBridges 1' "$torrc" &&
+  grep -qx '%include /var/lib/skvpn/tor-bridges.conf' "$torrc"; then
+  ok
+else
+  fail "the torrc lost a port, the transport plugin or the bridges include"
+fi
+
+world tor-bridges-update-asks-moat-for-the-base-country
+tor_on --preset russia
+moat_answer
+moat_up
+out=$(sv tor bridges update 2>&1) || true
+moat_down
+body=$(cat "$SKVPN_ROOT/moat.bodies" 2>/dev/null || true)
+if [[ "$body" == "application/vnd.api+json "* ]] &&
+  jq -e '. == {"country": "ru", "transports": ["obfs4", "snowflake"]}' <<<"${body#* }" >/dev/null &&
+  grep -qx 'Bridge obfs4 198.51.100.7:443 CCCC cert=xyz iat-mode=0' "$(bridges_file)" &&
+  grep -qx 'Bridge snowflake 192.0.2.3:80 AAAA url=https://broker.example/' "$(bridges_file)" &&
+  [[ $(grep -c '^Bridge ' "$(bridges_file)") == 3 ]] &&
+  grep -qx 'reload-or-restart skvpn-tor.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "bridges update did not ask Moat for ru and the runnable transports, keep only those, or reload Tor: $out"
+fi
+
+world tor-bridges-update-takes-a-country
+tor_on
+moat_answer
+moat_up
+none=0
+sv tor bridges update >/dev/null 2>&1 || none=$?
+sv tor bridges update --country IR >/dev/null 2>&1 || true
+moat_down
+if ((none)) && [[ $(wc -l <"$SKVPN_ROOT/moat.bodies") == 1 ]] &&
+  jq -e '.country == "ir"' <<<"$(cut -d' ' -f2- "$SKVPN_ROOT/moat.bodies")" >/dev/null; then
+  ok
+else
+  fail "with no preset bridges update guessed a country, or --country was not what it asked for"
+fi
+
+world tor-bridges-update-refuses-two-countries
+tor_on --preset russia --preset iran
+if ! err=$(sv tor bridges update 2>&1) && [[ "$err" == *--country* && ! -e $(bridges_file) ]]; then
+  ok
+else
+  fail "with two presets bridges update picked one by itself"
+fi
+
+world tor-bridges-update-keeps-the-old-bridges-on-a-moat-error
+tor_on --preset russia
+mkdir -p "$(dirname "$(bridges_file)")"
+printf 'Bridge obfs4 203.0.113.1:443 OLD cert=old iat-mode=0\n' >"$(bridges_file)"
+printf '{"errors": [{"code": 404, "detail": "no bridges for that country"}]}\n' >"$SKVPN_ROOT/moat.json"
+moat_up
+if ! err=$(sv tor bridges update 2>&1) && [[ "$err" == *"no bridges for that country"* ]] &&
+  grep -q OLD "$(bridges_file)" && ! grep -q skvpn-tor "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "a Moat error replaced the bridges, reloaded Tor or went unreported"
+fi
+moat_down
+
+world tor-commands-without-tor-configured-fail
+sv add "$HY2" >/dev/null
+if ! sv tor bridges update >/dev/null 2>&1 && ! sv up tor >/dev/null 2>&1 && [[ ! -e $(profile tor) ]]; then
+  ok
+else
+  fail "a tor command ran on a host where Tor is not configured"
+fi
+
+world up-tor-runs-the-rendered-profile
+tor_on
+sv up tor >/dev/null
+if jq -e --slurpfile want "$SKVPN_ROOT/etc/sing-box/tor.json" '. == $want[0]' "$(profile tor)" >/dev/null &&
+  grep -q 'start sing-box@tor.service' "$SYSTEMCTL_LOG" && [[ "$(<"$(active_file)")" == tor ]] &&
+  jq -e --arg u "$(tor_policy user)" --argjson p "$(tor_policy routePort)" '
+    .outbounds[0] == {"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": $p} and
+    (.route.rules | any(.user == [$u] and .outbound == "direct")) and
+    (.dns.rules | any(.user == [$u] and .server == "bootstrap")) and
+    .dns.rules[-1] == {"action": "route", "server": "tor"}' "$(profile tor)" >/dev/null; then
+  ok
+else
+  fail "up tor did not run the rendered profile, or the profile lets Tor route into itself"
+fi
+
+world up-tor-via-takes-tor-through-a-node
+sv add "$HY2" >/dev/null
+tor_on
+sv up tor --via HY2 >/dev/null
+if jq -e --slurpfile node "$(profile HY2)" --arg u "$(tor_policy user)" '
+    (.outbounds | any(. == ($node[0].outbounds[0] + {"tag": "tor-via"}))) and
+    (.route.rules | any(.user == [$u] and .outbound == "tor-via")) and
+    (.route.rules | all(.outbound != "direct" or .user != [$u]))' "$(profile tor)" >/dev/null &&
+  ! sv up tor --via nowhere >/dev/null 2>&1 && ! sv up tor --via tor >/dev/null 2>&1 &&
+  ! sv up HY2 --via HY2 >/dev/null 2>&1; then
+  ok
+else
+  fail "up tor --via did not send Tor through the node, or took a node it should refuse"
+fi
+
+world up-tor-profile-passes-the-real-sing-box
+sv add "$HY2" >/dev/null
+tor_on
+sv up tor --via HY2 >/dev/null
+real=$(type -ap sing-box | grep -v -x -F "$HERE/stub/sing-box" | head -n 1 || true)
+if [[ -z "$real" ]]; then
+  fail "no real sing-box on PATH after the stub"
+elif err=$("$real" check -C "$SKVPN_ROOT/etc/sing-box/base.d" -c "$(profile tor)" 2>&1); then
+  ok
+else
+  fail "the real sing-box refused the base with the tor profile: $err"
+fi
+
+world tor-is-a-reserved-profile-name
+url=$(sub_body "${HY2%#*}#tor")
+sv add "${HY2%#*}#tor" >/dev/null 2>&1 || true
+sv sub set "$url" >/dev/null 2>&1 || true
+if [[ ! -e $(profile tor) ]]; then
+  ok
+else
+  fail "a share link took the name the host's Tor profile is reserved under"
+fi
+
+world default-lists-leave-tor-out
+sv add "$HY2" >/dev/null
+tor_on
+sv up tor >/dev/null
+export FAKE_DELAYS='HY2=42'
+sv ping >/dev/null
+pinged=$(jq -c '[.outbounds[].tag]' "$SING_BOX_CONFIG")
+listed=$(sv ls --names)
+if [[ "$pinged" == '["HY2"]' && "$listed" == *tor* ]] &&
+  jq -e '.outbounds[0].outbounds == ["HY2"]' <<<"$(sv export --sfa --no-tailscale 2>/dev/null)" >/dev/null; then
+  ok
+else
+  fail "ping or export --sfa took the host's Tor profile by default, or ls hid it"
+fi
+
+world tor-status-reads-the-bootstrap-and-bridges
+tor_on --preset russia
+moat_answer
+moat_up
+sv tor bridges update >/dev/null 2>&1 || true
+moat_down
+export FAKE_JOURNAL=$'Oct 20 [notice] Bootstrapped 14% (handshake): Handshaking\nOct 20 [notice] Bootstrapped 73% (loading_descriptors): Loading relay descriptors'
+export FAKE_TOR_STATE=active
+out=$(sv tor 2>&1) || true
+if [[ "$out" == *73%* && "$out" != *14%* && "$out" == *"obfs4 2"* && "$out" == *"snowflake 1"* &&
+  "$out" == *ru* && "$out" == *"127.0.0.1:$(tor_policy socksPort)"* ]]; then
+  ok
+else
+  fail "tor status lost the bootstrap, a bridge count, the country or the SOCKS address: $out"
+fi
+
+world export-sfa-tor-goes-through-orbot
+sv add "$HY2" >/dev/null
+sfa_base
+with=$(sv export --sfa --no-tailscale --tor 2>/dev/null) || true
+without=$(sv export --sfa --no-tailscale 2>/dev/null) || true
+if jq -e --slurpfile p "$REPO/policy.json" '$p[0].tor as $t |
+    (.outbounds | any(. == {"type": "socks", "tag": "tor", "server": "127.0.0.1", "server_port": $t.orbot.socksPort})) and
+    .outbounds[0].outbounds == ["HY2", "tor"] and
+    (.route.rules | any(.package_name == [$t.orbot.package] and .outbound == "direct")) and
+    (.route.rules | any(.domain_suffix == [$t.onion] and .outbound == "tor")) and
+    (.dns.servers | any(.type == "fakeip")) and
+    (.dns.rules | any(.domain_suffix == [$t.onion] and .server == "onion"))' <<<"$with" >/dev/null &&
+  jq -e '(.outbounds | all(.tag != "tor")) and (.dns.servers | all(.type != "fakeip"))' <<<"$without" >/dev/null; then
+  ok
+else
+  fail "export --sfa --tor did not reach Orbot for .onion and as an exit, or --tor leaked into the plain export"
+fi
+
+world export-sfa-tor-passes-the-real-sing-box
+sv add "$HY2" >/dev/null
+sfa_base
+sv export --sfa --no-tailscale --tor >"$SKVPN_ROOT/phone.json" 2>/dev/null || true
+real=$(type -ap sing-box | grep -v -x -F "$HERE/stub/sing-box" | head -n 1 || true)
+# The phone fetches its rule-sets at start; check sees only the shape
+if [[ -n "$real" ]] && err=$(jq '.route.rule_set = [] | .route.rules |= map(select(.rule_set == null)) | .dns.rules |= map(select(.rule_set == null))' \
+  "$SKVPN_ROOT/phone.json" >"$SKVPN_ROOT/phone-check.json" && "$real" check -c "$SKVPN_ROOT/phone-check.json" 2>&1); then
+  ok
+else
+  fail "the real sing-box refused the phone config with Tor: ${err:-no real sing-box}"
 fi
 
 world skvpn-prints-its-version

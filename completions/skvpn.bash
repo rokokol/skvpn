@@ -6,7 +6,7 @@ _skvpn() {
   local cmd=${COMP_WORDS[1]-}
 
   if ((COMP_CWORD == 1)); then
-    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restart restore boot split ping measure top status export --version" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "sub add rm ls up down restart restore boot split ping measure top status export tor --version" -- "$cur")
     return
   fi
 
@@ -14,7 +14,26 @@ _skvpn() {
     down)
       mapfile -t COMPREPLY < <(compgen -W "--no-guard" -- "$cur")
       ;;
-    up | rm)
+    up)
+      # The tor profile exists once Tor is configured, before its first up writes it
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "$([[ -e /etc/sing-box/tor.json ]] && echo tor) $(skvpn ls --names 2>/dev/null)" -- "$cur")
+      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == tor ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "--via" -- "$cur")
+      elif ((COMP_CWORD == 4)) && [[ ${COMP_WORDS[3]} == --via ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null | grep -vx tor)" -- "$cur")
+      fi
+      ;;
+    tor)
+      if ((COMP_CWORD == 2)); then
+        mapfile -t COMPREPLY < <(compgen -W "status bridges" -- "$cur")
+      elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == bridges ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "ls update" -- "$cur")
+      elif ((COMP_CWORD == 4)) && [[ ${COMP_WORDS[3]} == update ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "--country" -- "$cur")
+      fi
+      ;;
+    rm)
       # Live names, not a cached list: the directory is world-listable on purpose
       mapfile -t COMPREPLY < <(compgen -W "$(skvpn ls --names 2>/dev/null)" -- "$cur")
       ;;
@@ -45,7 +64,7 @@ _skvpn() {
       fi
       ;;
     export)
-      mapfile -t COMPREPLY < <(compgen -W "--sfa --no-tailscale $(skvpn ls --names 2>/dev/null)" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "--sfa --no-tailscale --tor $(skvpn ls --names 2>/dev/null)" -- "$cur")
       ;;
     status)
       if ((COMP_CWORD == 2)); then

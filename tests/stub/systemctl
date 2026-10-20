@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Answers list-units from FAKE_ACTIVE, and from FAKE_ACTIVATING when the call asks for that
-# state too, and records every call for the suite to assert on
+# state too, the Tor unit's is-active from FAKE_TOR_STATE, and records every call for the
+# suite to assert on
 set -euo pipefail
 
 printf '%s\n' "$*" >>"${SYSTEMCTL_LOG:?}"
@@ -15,4 +16,8 @@ fi
 # A unit waiting out RestartSec is activating, not active
 if [[ "${1:-}" == list-units && "$*" == *activating* && -n "${FAKE_ACTIVATING:-}" ]]; then
   printf 'sing-box@%s.service loaded activating auto-restart\n' "$FAKE_ACTIVATING"
+fi
+if [[ "$*" == "is-active skvpn-tor.service" ]]; then
+  printf '%s\n' "${FAKE_TOR_STATE:-inactive}"
+  [[ "${FAKE_TOR_STATE:-}" == active ]] || exit 3
 fi

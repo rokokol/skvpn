@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Render the non-Nix sing-box base config, or the guard laid over it, from install.sh
-options."""
+"""Render the non-Nix sing-box base config, the guard laid over it, or the Tor pair —
+the torrc and the sing-box half of the `tor` profile — from install.sh options."""
 
 import argparse
 import ipaddress
@@ -18,6 +18,7 @@ POLICY_FILE = Path(__file__).resolve().parent.parent / "policy.json"
 POLICY = json.loads(POLICY_FILE.read_text())
 PRESETS = {preset["name"]: preset for preset in POLICY["presets"]}
 GUARD_AI = (f"geosite-{POLICY['guard']['tag']}", POLICY["guard"]["geosite"])
+TOR = POLICY["tor"]
 
 
 # The TUN's own addresses. --no-ipv6 drops the v6 one: with auto_route on a host
@@ -74,6 +75,17 @@ def domain(value):
             f"not a domain — a whole zone is written with its dot, like .ru: {value}"
         )
     return value
+
+
+def tor_plugin(value):
+    """TRANSPORTS=PATH: the comma-separated transports one plugin binary runs"""
+    transports, path = tagged_path(value)
+    unknown = [t for t in transports.split(",") if t not in TOR["transports"]]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"not a transport skvpn asks Moat for: {unknown[0]}"
+        )
+    return transports.split(","), absolute_path(path)
 
 
 def is_glob(value):
@@ -134,9 +146,22 @@ parser.add_argument("--skip-path-check", action="store_true")
 parser.add_argument("--guard-ai", action="store_true")
 parser.add_argument("--guard-zone", action="append", default=[])
 parser.add_argument("--guard-geosite", action="append", type=tagged_path, default=[])
-# The same options render either file, so the two can never disagree about the base
-parser.add_argument("--render", choices=("base", "guard"), default="base")
+# A Tor of skvpn's own: .onion names reach it from any program, and `skvpn up tor`
+# sends everything there. Each --tor-plugin is one transport binary the torrc runs
+parser.add_argument("--tor", action="store_true")
+parser.add_argument("--tor-plugin", action="append", type=tor_plugin, default=[])
+parser.add_argument("--tor-socks-port", type=int, default=TOR["socksPort"])
+parser.add_argument("--tor-data-dir", type=absolute_path, default="/var/lib/skvpn-tor")
+parser.add_argument(
+    "--tor-bridges", type=absolute_path, default="/var/lib/skvpn/tor-bridges.conf"
+)
+# The same options render every file, so they can never disagree about the base
+parser.add_argument(
+    "--render", choices=("base", "guard", "tor", "torrc"), default="base"
+)
 args = parser.parse_args()
+if args.tor and not args.tor_plugin:
+    parser.error("--tor needs a --tor-plugin: Tor goes out through bridges only")
 
 for kind, values in (("name", args.split_name), ("path", args.split_path)):
     for value in values:
@@ -202,6 +227,12 @@ def bootstrap_rule(field, values):
 
 
 dns_rules = []
+# A .onion name gets an address from the fake range, and the connection to it carries
+# the name back, which the route rule below sends to Tor; no resolver knows these names
+if args.tor:
+    dns_rules.append(
+        {"domain_suffix": [TOR["onion"]], "action": "route", "server": "onion"}
+    )
 if zones:
     dns_rules.append(bootstrap_rule("domain_suffix", zones))
 if geosite_tags:
@@ -230,11 +261,15 @@ if args.tailscale:
 if args.docker:
     inbound["exclude_interface"] = ["docker0"]
 
-route_rules = [
+route_rules: list[dict] = [
     {"action": "sniff"},
     {"protocol": "dns", "action": "hijack-dns"},
-    {"ip_is_private": True, "outbound": "direct"},
 ]
+# Ahead of every direct rule: a .onion connection that fell through to one of them would
+# leave in the clear and fail
+if args.tor:
+    route_rules.append({"domain_suffix": [TOR["onion"]], "outbound": "tor"})
+route_rules.append({"ip_is_private": True, "outbound": "direct"})
 if zones:
     route_rules.append({"domain_suffix": zones, "outbound": "direct"})
 if rule_tags:
@@ -285,6 +320,59 @@ config = {
     },
 }
 
+local_tor = {"server": "127.0.0.1", "server_port": TOR["routePort"]}
+if args.tor:
+    config["dns"]["servers"].append(
+        {"tag": "onion", "type": "fakeip", "inet4_range": TOR["fakeip"]}
+    )
+    # The port that isolates by destination, so two sites never share one circuit
+    config["outbounds"].append({"type": "socks", "tag": "tor", **local_tor})
+
+# The sing-box half of the `tor` profile: `proxy` is Tor's SOCKS, and Tor's own traffic,
+# matched by its user, leaves direct — or through the node `skvpn up tor --via` puts in
+# place of `direct` — rather than back into itself. Names go to Tor's DNSPort, except
+# Tor's own, which it needs before it can resolve anything: a transport looks up its
+# broker's name before the first circuit exists
+tor_profile = None
+if args.tor:
+    tor_user = [TOR["user"]]
+    tor_profile = {
+        "outbounds": [{"type": "socks", "tag": "proxy", **local_tor}],
+        "dns": {
+            "servers": [
+                {
+                    "tag": "tor",
+                    "type": "udp",
+                    "server": "127.0.0.1",
+                    "server_port": TOR["dnsPort"],
+                }
+            ],
+            "rules": [
+                {"user": tor_user, "action": "route", "server": "bootstrap"},
+                {"action": "route", "server": "tor"},
+            ],
+        },
+        "route": {"rules": [{"user": tor_user, "outbound": "direct"}]},
+    }
+
+
+def torrc():
+    """Tor's own config. The second SOCKS port is the one sing-box dials; the first is
+    the user's. The bridges file is CLI state, written by `skvpn tor bridges update`"""
+    lines = [
+        f"DataDirectory {args.tor_data_dir}",
+        f"SocksPort 127.0.0.1:{args.tor_socks_port}",
+        f"SocksPort 127.0.0.1:{TOR['routePort']} IsolateDestAddr",
+        f"DNSPort 127.0.0.1:{TOR['dnsPort']}",
+    ]
+    lines += [
+        f"ClientTransportPlugin {','.join(transports)} exec {path}"
+        for transports, path in args.tor_plugin
+    ]
+    lines += ["UseBridges 1", f"%include {args.tor_bridges}"]
+    return "\n".join(lines) + "\n"
+
+
 # Laid over the base the way nix/module.nix lays it: sing-box sorts every file by
 # path, keeps the first scalar and appends arrays, so this cannot move `final` and its
 # rules land after the base's. `proxy` is direct here instead, and the names nobody
@@ -318,6 +406,13 @@ if guard_matches:
         },
     }
 
-# `null` for the guard means there is none: install.sh removes its file and unit
-json.dump(config if args.render == "base" else guard, fp=sys.stdout, indent=2)
+if args.render == "torrc":
+    if not args.tor:
+        parser.error("--render torrc needs --tor")
+    sys.stdout.write(torrc())
+    sys.exit(0)
+
+# `null` for the guard or the tor profile means there is none: install.sh drops its file
+rendered = {"base": config, "guard": guard, "tor": tor_profile}[args.render]
+json.dump(rendered, fp=sys.stdout, indent=2)
 print()

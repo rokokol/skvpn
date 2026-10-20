@@ -214,8 +214,28 @@
                   "offFirewall", "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "stopPost", "sudoRules", "timerInterval",
-                  "tmpfiles", "unitPath", "users"
+                  "tmpfiles", "torBase", "torLyrebird", "torProfile", "torUnit", "torUsers", "torrc",
+                  "unitPath", "users"
                 ]' "the dump no longer has the keys these checks read"
+
+                # Tor: .onion names get a fake address and go to Tor ahead of every direct
+                # rule; the `tor` profile keeps Tor's own traffic and names out of itself
+                want '.torBase | fromjson | .dns.rules[0] == {"domain_suffix": ["${policy.tor.onion}"], "action": "route", "server": "onion"}' ".onion names are not answered from the fake range first"
+                want '.torBase | fromjson | .dns.servers | any(. == {"tag": "onion", "type": "fakeip", "inet4_range": "${policy.tor.fakeip}"})' "there is no fake range for .onion names"
+                want '.torBase | fromjson | .outbounds | any(. == {"type": "socks", "tag": "tor", "server": "127.0.0.1", "server_port": ${toString policy.tor.routePort}})' "the base has no way to Tor's isolating port"
+                want '.torBase | fromjson | .route.rules | (map(.outbound == "tor" and .domain_suffix == ["${policy.tor.onion}"]) | index(true)) < (map(.ip_is_private == true) | index(true))' ".onion is not routed to Tor ahead of the direct rules"
+                want '.bareBase | fromjson | (.outbounds | all(.tag != "tor")) and (.dns.servers | all(.tag != "onion"))' "a base without Tor routes to one"
+                want '.torProfile | fromjson | .outbounds == [{"type": "socks", "tag": "proxy", "server": "127.0.0.1", "server_port": ${toString policy.tor.routePort}}]' "the tor profile does not send everything to Tor's isolating port"
+                want '.torProfile | fromjson | .route.rules == [{"user": ["${policy.tor.user}"], "outbound": "direct"}]' "Tor's own traffic would route back into Tor"
+                want '.torProfile | fromjson | .dns.rules == [{"user": ["${policy.tor.user}"], "action": "route", "server": "bootstrap"}, {"action": "route", "server": "tor"}]' "names do not go to Tor's DNSPort, or Tor's own would wait on itself"
+                want '.torrc | split("\n") | index("SocksPort 127.0.0.1:19050") and index("SocksPort 127.0.0.1:${toString policy.tor.routePort} IsolateDestAddr") and index("DNSPort 127.0.0.1:${toString policy.tor.dnsPort}")' "the torrc lost a port"
+                want '.torrc | split("\n") | index("UseBridges 1") and index("%include /var/lib/skvpn/tor-bridges.conf")' "the torrc does not take the bridges the CLI writes"
+                want '.torrc | test("ClientTransportPlugin ${lib.concatStringsSep "," policy.tor.transports} exec /nix/store/[^\n ]*/bin/lyrebird\n")' "the torrc does not run lyrebird for every transport Moat is asked for"
+                want '.torUnit.serviceConfig.User == "${policy.tor.user}" and .torUnit.serviceConfig.StateDirectoryMode == "0700"' "Tor does not run as the user the profile tells it apart by"
+                want '.torUnit.unitConfig.ConditionPathExists == "/var/lib/skvpn/tor-bridges.conf"' "Tor starts before it has any bridge"
+                want '.torUnit.wantedBy == ["multi-user.target"]' "Tor does not come up on boot"
+                want '.torUsers | index("${policy.tor.user}")' "the Tor user is missing"
+                want '(.users | index("${policy.tor.user}") | not) and (.bareEtc | index("sing-box/tor.json") | not) and (.bareServices | index("skvpn-tor") | not)' "Tor is set up while tor.enable is off"
 
                 # A split entry that would catch sing-box itself is refused at eval time
                 want '.splitBroken == []' "a plain split list trips an assertion"
@@ -425,6 +445,50 @@
                 touch $out
               '';
 
+          # The module and the installer's renderer each write the Tor pair and the base's Tor
+          # rules; this holds the two renderings to each other, so neither drifts alone
+          tor-parity =
+            let
+              wiring = import ./nix/module-test.nix {
+                inherit lib pkgs;
+                nixosModule = self.nixosModules.default;
+              };
+            in
+            pkgs.runCommand "tor-parity"
+              {
+                nativeBuildInputs = with pkgs; [
+                  diffutils
+                  jq
+                  python3
+                ];
+                inherit (wiring) torProfile torrc torBase;
+                passAsFile = [
+                  "torProfile"
+                  "torrc"
+                  "torBase"
+                ];
+              }
+              ''
+                mkdir -p repo
+                cp ${policyFile} repo/policy.json
+                cp -r ${nonNixDir} repo/non-nix
+                render() {
+                  python3 repo/non-nix/render-base.py --skip-path-check --tor --tor-socks-port 19050 \
+                    --tor-plugin ${lib.concatStringsSep "," policy.tor.transports}=${wiring.torLyrebird} "$@"
+                }
+                fail() { echo "tor parity: $1"; exit 1; }
+                render --render tor | jq -S . >renderer.json
+                jq -S . "$torProfilePath" >module.json
+                diff -u module.json renderer.json || fail "the module and the renderer write different tor profiles"
+                render --render torrc >renderer.torrc
+                diff -u "$torrcPath" renderer.torrc || fail "the module and the renderer write different torrcs"
+                pick='{onion: [.dns.servers[] | select(.tag == "onion")], dns: .dns.rules[0], tor: [.outbounds[] | select(.tag == "tor")], route: .route.rules[2]}'
+                render | jq -S "$pick" >renderer-base.json
+                jq -S "$pick" "$torBasePath" >module-base.json
+                diff -u module-base.json renderer-base.json || fail "the module and the renderer route .onion differently"
+                touch $out
+              '';
+
           # The stub test above cannot see this: a stubbed option accepts anything, so a
           # module that writes to the wrong one still passes it. Here the real module set
           # gets to refuse
@@ -448,11 +512,14 @@
                   "dockerFollowBase", "enabledAlias", "enabledBase", "enabledBroken",
                   "enabledExtra", "enabledFirewall", "enabledGuardConfig", "enabledGuardUnit",
                   "enabledMeasureTimer", "enabledMeasureUnit", "enabledNftUnit", "enabledRestore", "enabledSudo",
-                  "enabledTemplateUnit", "enabledTimer", "enabledTmpfiles",
+                  "enabledTemplateUnit", "enabledTimer", "enabledTmpfiles", "enabledTorUnit",
                   "hostStrictBroken", "hostStrictFirewall", "offAlias", "offBroken", "offEtc",
                   "offRestore", "offUser", "restoreOffPresent", "restoreOffTemplate",
-                  "singBoxUserGroup", "syncthingFollowPostStart"
+                  "singBoxUserGroup", "syncthingFollowPostStart", "torUserGroup"
                 ]' "the dump no longer has the keys these checks read"
+
+                want '.enabledTorUnit | test("ExecStart=/nix/store/[^\n]*/bin/tor -f /etc/sing-box/torrc") and test("User=${policy.tor.user}") and test("ConditionPathExists=/var/lib/skvpn/tor-bridges.conf")' "the Tor unit did not survive the real module set"
+                want '.torUserGroup == "${policy.tor.user}"' "the Tor user lost its group"
 
                 want '.enabledBroken == []' "an enabled module breaks the system"
                 want '.enabledBase | fromjson | .route.final == "proxy"' "the base did not survive the real module set"

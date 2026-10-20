@@ -35,6 +35,7 @@ _skvpn() {
     'top:watch the speed through the active tunnel live'
     'status:show the active profile and sync age'
     'export:print the config a profile runs with, or with --sfa a config for a phone'
+    'tor:show the state of the Tor skvpn runs, or fetch its bridges'
     '--version:print the version'
   )
 
@@ -47,8 +48,32 @@ _skvpn() {
     down)
       compadd -- --no-guard
       ;;
-    up | rm)
+    up)
+      # The tor profile exists once Tor is configured, before its first up writes it
+      if ((CURRENT == 3)); then
+        [[ -e /etc/sing-box/tor.json ]] && compadd -- tor
+        _skvpn_profiles
+      elif ((CURRENT == 4)) && [[ "$words[3]" == tor ]]; then
+        compadd -- --via
+      elif ((CURRENT == 5)) && [[ "$words[4]" == --via ]]; then
+        _skvpn_profiles
+      fi
+      ;;
+    rm)
       _skvpn_profiles
+      ;;
+    tor)
+      if ((CURRENT == 3)); then
+        local -a subcommands=(
+          'status:the unit, its bootstrap, its bridges and its SOCKS port'
+          'bridges:list the bridges, or fetch new ones from Moat'
+        )
+        _describe -t commands 'tor command' subcommands
+      elif ((CURRENT == 4)) && [[ "$words[3]" == bridges ]]; then
+        compadd -- ls update
+      elif ((CURRENT == 5)) && [[ "$words[4]" == update ]]; then
+        compadd -- --country
+      fi
       ;;
     boot)
       if ((CURRENT == 3)); then
@@ -80,7 +105,7 @@ _skvpn() {
       fi
       ;;
     export)
-      compadd -- --sfa --no-tailscale
+      compadd -- --sfa --no-tailscale --tor
       _skvpn_profiles
       ;;
     status)

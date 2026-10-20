@@ -58,6 +58,7 @@ let
         textfile = "/var/lib/collector/skvpn.prom";
       };
       monitor.enable = true;
+      tor.enable = true;
     };
   };
 
@@ -122,6 +123,8 @@ in
   enabledMeasureTimer = enabled.systemd.units."skvpn-measure.timer".text;
   enabledTemplateUnit = enabled.systemd.units."sing-box@.service".text;
   enabledNftUnit = enabled.systemd.units."skvpn-nft@.service".text;
+  enabledTorUnit = enabled.systemd.units."skvpn-tor.service".text;
+  torUserGroup = enabled.users.users.skvpn-tor.group;
 
   dockerFollowBase = dockerFollow.environment.etc."sing-box/base.d/00-base.json".text;
   syncthingFollowPostStart = syncthingFollow.systemd.services."sing-box@".postStart;

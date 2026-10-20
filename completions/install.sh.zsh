@@ -20,6 +20,8 @@ _install_sh_skvpn() {
     '--guard-ai[while no profile is up, refuse AI services]' \
     '*--guard-zone[a domain suffix the guard refuses]:suffix:' \
     '*--guard-geosite[a local domain rule-set the guard refuses]:tag=path:' \
+    '--tor[run a Tor of skvpn own, for .onion names and skvpn up tor]' \
+    '--tor-socks-port[loopback port of the SOCKS proxy Tor offers]:port:' \
     '--direct-russia[route Russian zones, geosite and geoip directly]' \
     '--direct-china[route Chinese zones, geosite and geoip directly]' \
     '--direct-iran[route Iranian zones, geosite and geoip directly]' \
