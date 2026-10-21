@@ -93,6 +93,7 @@ share/skvpn/policy.json             presets, the tailnet and the rule-sets' sour
 /etc/sing-box/tor.json              the sing-box half of the `tor` profile, when Tor is on
 /etc/sing-box/torrc                 Tor's own config — rendered with tor.json
 /etc/sing-box/tor-resolv.conf       the resolver Tor's unit sees — rendered with tor.json
+/etc/sing-box/tor-nsswitch.conf     the name service Tor's unit sees — rendered with tor.json
 /var/lib/skvpn/tor-bridges.conf     Tor's bridges — written by `skvpn tor bridges update`
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default

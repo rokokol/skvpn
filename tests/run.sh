@@ -2226,10 +2226,9 @@ if [[ "$plugins" == "ClientTransportPlugin obfs4 exec $SKVPN_ROOT/plugins/obfs4p
   grep -qx 'ExecStart=/usr/bin/tor -f /etc/sing-box/torrc' "$unit" &&
   grep -qx "User=$user" "$unit" &&
   grep -qx 'ConditionPathExists=/var/lib/skvpn/tor-bridges.conf' "$unit" &&
-  grep -qx 'BindReadOnlyPaths=/etc/sing-box/tor-resolv.conf:/etc/resolv.conf' "$unit" &&
-  grep -qx 'Environment=GODEBUG=netdns=go' "$unit" &&
   grep -qx 'nameserver 172.19.0.2' "$(guard_stage sing-box/tor-resolv.conf)" &&
   grep -q '/tor-resolv\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
+  grep -q '/tor-nsswitch\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   grep -qx "u $user - \"skvpn Tor\"" "$(guard_stage sysusers.d/skvpn-tor.conf)" &&
   grep -q 'skvpn-tor.service' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
   ok
@@ -2241,7 +2240,7 @@ world installer-drops-tor-without-its-flag
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor >/dev/null
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
 if [[ ! -e "$(guard_stage sing-box/tor.json)" && ! -e "$(guard_stage sing-box/torrc)" &&
-! -e "$(guard_stage sing-box/tor-resolv.conf)" &&
+! -e "$(guard_stage sing-box/tor-resolv.conf)" && ! -e "$(guard_stage sing-box/tor-nsswitch.conf)" &&
 ! -e "$(guard_stage systemd/system/skvpn-tor.service)" && ! -e "$(guard_stage sysusers.d/skvpn-tor.conf)" ]] &&
   ! grep -qE 'skvpn-tor|/torrc$|/tor\.json$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   jq -e '.outbounds | all(.tag != "tor")' "$(guard_stage sing-box/base.d/00-base.json)" >/dev/null; then
@@ -2543,6 +2542,38 @@ if [[ "$(grep -m1 '^nameserver' <<<"$default")" == "nameserver 172.19.0.2" &&
   ok
 else
   fail "Tor's resolver is not the TUN's DNS then the remote server, waits long on a missing TUN, or took a name"
+fi
+
+# What a program in Tor's unit meets when it resolves through glibc: the unit's own binds
+# and hidden paths, laid out in a user, mount and network namespace, with a DNS server on
+# the TUN's DNS address. The lookup must reach that server, not nscd or systemd-resolved
+world tor-unit-resolves-through-the-tun-dns
+"$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor --tun-address 127.0.0.1/30 \
+  --dns-server 127.0.0.2 >/dev/null
+unit="$(guard_stage systemd/system/skvpn-tor.service)"
+binds=$(sed -n 's/^BindReadOnlyPaths=//p' "$unit")
+hidden=$(sed -n 's/^InaccessiblePaths=//p' "$unit")
+# shellcheck disable=SC2016 # the inner bash expands its arguments, this one must not
+answer=$(unshare -rmn bash -c '
+  set -e
+  ip link set lo up
+  "$1" 127.0.0.2 "$2/queries" >"$2/dns.out" &
+  for _ in $(seq 50); do [[ -s "$2/dns.out" ]] && break; sleep 0.1; done
+  [[ -s "$2/dns.out" ]] || { echo "the fake DNS server did not start" >&2; exit 1; }
+  # A host whose own name service never asks DNS, so only the files of the unit can make it
+  mount -t tmpfs none /etc
+  printf "hosts: files\n" >/etc/nsswitch.conf
+  : >/etc/resolv.conf
+  for bind in $3; do mount --bind "$4${bind%%:*}" "${bind#*:}"; done
+  for path in $5; do path=${path#-}; [[ ! -e "$path" ]] || mount -t tmpfs none "$path"; done
+  "$6" -c "import socket; print(socket.getaddrinfo(\"probe.example.test\", 80, socket.AF_INET)[0][4][0])"
+' _ "$HERE/fake-dns.py" "$SKVPN_ROOT" "$binds" "$SKVPN_ROOT/stage" "$hidden" \
+  "$(readlink -f "$(command -v python3)")" 2>"$SKVPN_ROOT/ns.err") || true
+if [[ "$answer" == 10.9.9.9 ]] && grep -qx 'probe.example.test' "$SKVPN_ROOT/queries" &&
+  ! grep -q GODEBUG "$unit"; then
+  ok
+else
+  fail "a glibc lookup in Tor's unit missed the TUN's DNS (answer: ${answer:-none}): $(tail -1 "$SKVPN_ROOT/ns.err")"
 fi
 
 world tor-bridges-update-asks-moat-for-the-base-country

@@ -290,6 +290,7 @@ in
   torProfile = torOn.environment.etc."sing-box/tor.json".text;
   torrc = torOn.environment.etc."sing-box/torrc".text;
   torResolv = torOn.environment.etc."sing-box/tor-resolv.conf".text;
+  torNsswitch = torOn.environment.etc."sing-box/tor-nsswitch.conf".text;
   torUnit = {
     inherit (torOn.systemd.services.skvpn-tor) wantedBy serviceConfig;
     unitConfig = torOn.systemd.services.skvpn-tor.unitConfig or { };

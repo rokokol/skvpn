@@ -158,7 +158,7 @@ parser.add_argument(
 # The same options render every file, so they can never disagree about the base
 parser.add_argument(
     "--render",
-    choices=("base", "guard", "tor", "torrc", "tor-resolv"),
+    choices=("base", "guard", "tor", "torrc", "tor-resolv", "tor-nsswitch"),
     default="base",
 )
 args = parser.parse_args()
@@ -381,6 +381,13 @@ def torrc():
     return "\n".join(lines) + "\n"
 
 
+def tor_nsswitch():
+    """The nsswitch.conf bound into Tor's unit, beside tor_resolv's file and with nscd
+    hidden: glibc asks nscd first, and the `resolve` source asks systemd-resolved
+    directly, so either one would skip the resolv.conf below"""
+    return "hosts: files dns\n"
+
+
 def tor_resolv():
     """The resolv.conf bound into Tor's unit. A transport resolves its broker through
     glibc otherwise, and the query reaches sing-box from systemd-resolved, which the
@@ -448,6 +455,11 @@ if args.render == "tor-resolv":
     if not args.tor:
         parser.error("--render tor-resolv needs --tor")
     sys.stdout.write(tor_resolv())
+    sys.exit(0)
+if args.render == "tor-nsswitch":
+    if not args.tor:
+        parser.error("--render tor-nsswitch needs --tor")
+    sys.stdout.write(tor_nsswitch())
     sys.exit(0)
 
 # `null` for the guard or the tor profile means there is none: install.sh drops its file

@@ -129,6 +129,8 @@
                   # find and pgrep: the ping cases look for what the probe left behind
                   findutils
                   gnugrep
+                  # ip, unshare and mount: Tor's unit is laid out in a namespace to resolve in
+                  iproute2
                   jq
                   procps
                   python3
@@ -136,6 +138,7 @@
                   # its check
                   sing-box
                   systemd
+                  util-linux
                 ];
               }
               ''
@@ -214,7 +217,7 @@
                   "offFirewall", "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "stopPost", "sudoRules", "timerInterval",
-                  "tmpfiles", "torBase", "torLyrebird", "torProfile", "torResolv", "torUnit", "torUsers", "torrc",
+                  "tmpfiles", "torBase", "torLyrebird", "torNsswitch", "torProfile", "torResolv", "torUnit", "torUsers", "torrc",
                   "unitPath", "users"
                 ]' "the dump no longer has the keys these checks read"
 
@@ -235,7 +238,7 @@
                 want '.torUnit.serviceConfig.User == "${policy.tor.user}" and .torUnit.serviceConfig.StateDirectoryMode == "0700"' "Tor does not run as the user the profile tells it apart by"
                 want '.torUnit.unitConfig.ConditionPathExists == "/var/lib/skvpn/tor-bridges.conf"' "Tor starts before it has any bridge"
                 want '.torUnit.wantedBy == ["multi-user.target"]' "Tor does not come up on boot"
-                want '(.torBase | fromjson | .dns.servers[] | select(.tag == "remote") | .server) as $remote | (.torResolv | split("\n") | .[0] == "nameserver 172.19.0.2" and .[1] == "nameserver \($remote)") and .torUnit.serviceConfig.BindReadOnlyPaths == ["/etc/sing-box/tor-resolv.conf:/etc/resolv.conf"] and .torUnit.serviceConfig.Environment == ["GODEBUG=netdns=go"]' "Tor's transports resolve through systemd-resolved, which the tor profile cannot tell apart"
+                want '(.torBase | fromjson | .dns.servers[] | select(.tag == "remote") | .server) as $remote | (.torResolv | split("\n") | .[0] == "nameserver 172.19.0.2" and .[1] == "nameserver \($remote)") and .torUnit.serviceConfig.BindReadOnlyPaths == ["/etc/sing-box/tor-resolv.conf:/etc/resolv.conf", "/etc/sing-box/tor-nsswitch.conf:/etc/nsswitch.conf"] and .torUnit.serviceConfig.InaccessiblePaths == ["-/run/nscd"] and (.torUnit.serviceConfig.Environment == null)' "Tor's transports resolve through nscd or systemd-resolved, which the tor profile cannot tell apart"
                 want '.torUsers | index("${policy.tor.user}")' "the Tor user is missing"
                 want '(.users | index("${policy.tor.user}") | not) and (.bareEtc | index("sing-box/tor.json") | not) and (.bareServices | index("skvpn-tor") | not)' "Tor is set up while tor.enable is off"
 
@@ -467,12 +470,14 @@
                   torProfile
                   torrc
                   torResolv
+                  torNsswitch
                   torBase
                   ;
                 passAsFile = [
                   "torProfile"
                   "torrc"
                   "torResolv"
+                  "torNsswitch"
                   "torBase"
                 ];
               }
@@ -492,6 +497,8 @@
                 diff -u "$torrcPath" renderer.torrc || fail "the module and the renderer write different torrcs"
                 render --render tor-resolv >renderer.resolv
                 diff -u "$torResolvPath" renderer.resolv || fail "the module and the renderer give Tor different resolvers"
+                render --render tor-nsswitch >renderer.nsswitch
+                diff -u "$torNsswitchPath" renderer.nsswitch || fail "the module and the renderer give Tor different name services"
                 pick='{onion: [.dns.servers[] | select(.tag == "onion")], dns: .dns.rules[0], tor: [.outbounds[] | select(.tag == "tor")], route: .route.rules[2]}'
                 render | jq -S "$pick" >renderer-base.json
                 jq -S "$pick" "$torBasePath" >module-base.json

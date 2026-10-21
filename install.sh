@@ -289,6 +289,7 @@ nft_unit="$unit_root/skvpn-nft@.service"
 tor_config="$sysconf_root/sing-box/tor.json"
 torrc_file="$sysconf_root/sing-box/torrc"
 tor_resolv="$sysconf_root/sing-box/tor-resolv.conf"
+tor_nsswitch="$sysconf_root/sing-box/tor-nsswitch.conf"
 tor_unit="$unit_root/skvpn-tor.service"
 # systemd-sysusers makes the user Tor runs as, which is what the `tor` profile tells its
 # traffic apart by; like a package's, the user outlives an uninstall
@@ -622,12 +623,14 @@ guard=0
 rendered_tor=$(mktemp)
 rendered_torrc=$(mktemp)
 rendered_tor_resolv=$(mktemp)
-temporary_files+=("$rendered_tor" "$rendered_torrc" "$rendered_tor_resolv")
+rendered_tor_nsswitch=$(mktemp)
+temporary_files+=("$rendered_tor" "$rendered_torrc" "$rendered_tor_resolv" "$rendered_tor_nsswitch")
 tor_user=""
 if ((TOR)); then
   python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render tor >"$rendered_tor"
   python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render torrc >"$rendered_torrc"
   python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render tor-resolv >"$rendered_tor_resolv"
+  python3 "$here/non-nix/render-base.py" "${render_args[@]}" --render tor-nsswitch >"$rendered_tor_nsswitch"
   tor_user=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tor"]["user"])' "$here/policy.json")
 fi
 if [[ -n "$EXTRA_SETTINGS" ]]; then
@@ -675,7 +678,7 @@ if ((live)) && [[ ! -f "$managed_state" && ! -f "$manifest_file" ]]; then
     "$unit_root/skvpn-restore.service" "$unit_root/skvpn-sync.service"
     "$unit_root/skvpn-sync.timer" "$sudoers_file" "$profile_file" "$sysctl_file"
     "$guard_config" "$guard_unit" "$root/lib/skvpn/nft-bypass" "$nft_unit"
-    "$tor_config" "$torrc_file" "$tor_resolv" "$tor_unit" "$tor_sysusers"
+    "$tor_config" "$torrc_file" "$tor_resolv" "$tor_nsswitch" "$tor_unit" "$tor_sysusers"
   )
   for path in "${managed_paths[@]}"; do
     [[ ! -e "$path" ]] || {
@@ -844,6 +847,8 @@ if ((TOR)); then
   rec "$torrc_file"
   install -Dm644 "$rendered_tor_resolv" "$tor_resolv"
   rec "$tor_resolv"
+  install -Dm644 "$rendered_tor_nsswitch" "$tor_nsswitch"
+  rec "$tor_nsswitch"
   install -Dm644 /dev/stdin "$tor_sysusers" <<EOF
 u $tor_user - "skvpn Tor"
 EOF
@@ -861,8 +866,8 @@ Group=$tor_user
 ExecStart=$TOR_BIN -f $SYSCONFDIR/sing-box/torrc
 ExecReload=/bin/kill -HUP \$MAINPID
 # The transports resolve their brokers straight into the TUN, as Tor's user (render-base.py)
-BindReadOnlyPaths=$SYSCONFDIR/sing-box/tor-resolv.conf:/etc/resolv.conf
-Environment=GODEBUG=netdns=go
+BindReadOnlyPaths=$SYSCONFDIR/sing-box/tor-resolv.conf:/etc/resolv.conf $SYSCONFDIR/sing-box/tor-nsswitch.conf:/etc/nsswitch.conf
+InaccessiblePaths=-/run/nscd
 # Tor refuses a DataDirectory anyone but its user can read
 StateDirectory=skvpn-tor
 StateDirectoryMode=0700
@@ -885,7 +890,7 @@ else
   if ((live_sys)) && [[ -f "$tor_unit" ]]; then
     systemctl disable --now skvpn-tor.service >/dev/null 2>&1 || true
   fi
-  rm -f "$tor_config" "$torrc_file" "$tor_resolv" "$tor_unit" "$tor_sysusers"
+  rm -f "$tor_config" "$torrc_file" "$tor_resolv" "$tor_nsswitch" "$tor_unit" "$tor_sysusers"
 fi
 
 if ((RESTORE)); then

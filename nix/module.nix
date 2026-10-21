@@ -254,6 +254,8 @@ let
       nameserver ${cfg.dns.remoteServer}
       options timeout:2
     '';
+  # Bound over Tor's /etc/nsswitch.conf, with nscd hidden: render-base.py's tor_nsswitch
+  torNsswitch = "hosts: files dns\n";
 
   # The Clash API file for `skvpn top`, written at every start by root. It cannot be an
   # etc entry: the secret would sit in the world-readable store. The secret lives in a
@@ -919,6 +921,7 @@ in
       "sing-box/tor.json".text = builtins.toJSON torProfile;
       "sing-box/torrc".text = torrc;
       "sing-box/tor-resolv.conf".text = torResolv;
+      "sing-box/tor-nsswitch.conf".text = torNsswitch;
     };
 
     # Written by root, contents read by the service user; the directory itself lists for
@@ -977,6 +980,7 @@ in
       restartTriggers = [
         torrc
         torResolv
+        torNsswitch
       ];
 
       serviceConfig = {
@@ -985,8 +989,11 @@ in
         ExecStart = "${lib.getExe cfg.tor.package} -f /etc/sing-box/torrc";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         # The transports resolve their brokers straight into the TUN, as Tor's user
-        BindReadOnlyPaths = [ "/etc/sing-box/tor-resolv.conf:/etc/resolv.conf" ];
-        Environment = [ "GODEBUG=netdns=go" ];
+        BindReadOnlyPaths = [
+          "/etc/sing-box/tor-resolv.conf:/etc/resolv.conf"
+          "/etc/sing-box/tor-nsswitch.conf:/etc/nsswitch.conf"
+        ];
+        InaccessiblePaths = [ "-/run/nscd" ];
         # Tor refuses a DataDirectory anyone but its user can read
         StateDirectory = "skvpn-tor";
         StateDirectoryMode = "0700";
