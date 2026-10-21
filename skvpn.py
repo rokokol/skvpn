@@ -1163,6 +1163,33 @@ def preset_countries():
     return [p["tag"] for p in policy()["presets"] if {f"geosite-{p['tag']}", f"geoip-{p['tag']}"} & tags]
 
 
+# Moat can hand out an obfs4 bridge on a LAN address. obfs4 dials the address in its line,
+# so such a bridge never answers; snowflake and webtunnel put documentation placeholders
+# there and reach a broker or a URL instead
+DIALLED_TRANSPORTS = {"obfs4"}
+LOCAL_NETWORKS = [
+    ipaddress.ip_network(n)
+    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+]
+
+
+def reachable_bridge(kind, line):
+    """False for a bridge whose transport dials a LAN, loopback or link-local address."""
+    if kind not in DIALLED_TRANSPORTS:
+        return True
+    host = line.split()[1].rsplit(":", 1)[0].strip("[]")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_unspecified
+        or any(address in network for network in LOCAL_NETWORKS)
+    )
+
+
 def moat_bridges(country, transports):
     """[(type, bridge line)] Moat recommends for the country, of the transports given, in
     the order it recommends them. Moat says what went wrong in an `errors` list."""
@@ -1188,6 +1215,10 @@ def moat_bridges(country, transports):
         offer = setting.get("bridges", {}) if isinstance(setting, dict) else {}
         if offer.get("type") in transports:
             bridges += [(offer["type"], line) for line in offer.get("bridge_strings", [])]
+    for kind, line in bridges:
+        if not reachable_bridge(kind, line):
+            print(f"  -  {kind} {line.split()[1]}: a local address, never reachable")
+    bridges = [bridge for bridge in bridges if reachable_bridge(*bridge)]
     if not bridges:
         die(f"Moat offered no bridges for {country} of a kind this Tor runs ({', '.join(transports)})")
     return bridges

@@ -2490,7 +2490,7 @@ moat_answer() {
 {"settings": [
   {"bridges": {"type": "snowflake", "source": "bridgedb", "bridge_strings": ["snowflake 192.0.2.3:80 AAAA url=https://broker.example/"]}},
   {"bridges": {"type": "webtunnel", "source": "bridgedb", "bridge_strings": ["webtunnel [2001:db8::1]:443 BBBB url=https://wt.example/x"]}},
-  {"bridges": {"type": "obfs4", "source": "bridgedb", "bridge_strings": ["obfs4 198.51.100.7:443 CCCC cert=xyz iat-mode=0", "obfs4 198.51.100.8:443 DDDD cert=abc iat-mode=0"]}}
+  {"bridges": {"type": "obfs4", "source": "bridgedb", "bridge_strings": ["obfs4 198.51.100.7:443 CCCC cert=xyz iat-mode=0", "obfs4 192.168.0.21:2101 EEEE cert=lan iat-mode=2", "obfs4 198.51.100.8:443 DDDD cert=abc iat-mode=0"]}}
 ]}
 EOF
 }
@@ -2553,6 +2553,23 @@ if [[ "$body" == "application/vnd.api+json "* ]] &&
   ok
 else
   fail "bridges update did not ask Moat for ru and the runnable transports, keep only those, or reload Tor: $out"
+fi
+
+# Moat has offered an obfs4 bridge on a LAN address; obfs4 dials the address in its line,
+# so that bridge can never answer. The other transports' addresses are placeholders
+world tor-bridges-update-drops-obfs4-on-a-lan-address
+tor_on --preset russia
+moat_answer
+moat_up
+out=$(sv tor bridges update 2>&1) || true
+moat_down
+if ! grep -q '192\.168\.0\.21' "$(bridges_file)" &&
+  grep -qx 'Bridge obfs4 198.51.100.8:443 DDDD cert=abc iat-mode=0' "$(bridges_file)" &&
+  grep -qx 'Bridge snowflake 192.0.2.3:80 AAAA url=https://broker.example/' "$(bridges_file)" &&
+  grep -q '192\.168\.0\.21' <<<"$out"; then
+  ok
+else
+  fail "bridges update kept an obfs4 bridge on a LAN address, or dropped it in silence: $out"
 fi
 
 world tor-bridges-update-takes-a-country
