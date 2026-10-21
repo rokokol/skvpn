@@ -120,3 +120,17 @@ openssl s_client -connect 140.82.121.4:443 -servername www.qz7vk3xptn2b.com </de
 **Mechanism:** Xray reads the SNI from the ClientHello. Without `routeOnly`, it uses that name for routing and also as the new destination: it resolves the name on the exit and drops the client's address. Tor puts a random name like `www.<random>.com` into its TLS, and that name does not resolve. With `routeOnly: true`, the name steers routing only, and the connection goes to the client's address
 
 **Safe route:** give Tor bridges. obfs4 carries no TLS, and snowflake and webtunnel send real names. `routeOnly` stays off on purpose: a client with a poisoned local DNS sends a stub address with the real SNI, and the rewrite takes it to the real site. To check an exit, compare the certificate subject as above, and never read a stalled handshake as a block
+
+---
+
+## A user rule never matches a lookup made through systemd-resolved
+
+**Where it bites:** the `tor` profile's DNS rule for Tor's user, which sends Tor's own names to the bootstrap resolver. Any `user` or `process_*` DNS rule meets it on a host where `/etc/resolv.conf` points at `127.0.0.53`
+
+**Reproduction:** sing-box 1.14.1, systemd-resolved with the TUN as its `~.` link, and lyrebird 0.8.1, built with cgo. Remove `BindReadOnlyPaths` from the Tor unit, then `skvpn up tor`
+
+**Misleading result:** Tor bootstraps on any other profile, so the bridges look good. On the `tor` profile, its log fills with `lookup cdn.zk.mk: Temporary failure in name resolution` and `waiting for circuit`. The route rule for the same user works, so the user rules look right
+
+**Mechanism:** a Go program built with cgo resolves through glibc, which asks nscd or systemd-resolved. The resolver sends the query into the TUN as its own user, so sing-box sees `systemd-resolve`, not Tor's user. The query falls through to the `tor` server, the DNSPort of a Tor that waits for this very name. On another profile, the same query goes to the remote server through the node and gets an answer
+
+**Safe route:** Tor's unit binds `tor-resolv.conf` over `/etc/resolv.conf`, with the TUN's DNS address as the only server, and sets `GODEBUG=netdns=go`. The transports then send their queries into the TUN themselves, as Tor's user. The flake's `module-wiring` and the suite's installer case hold both lines in place

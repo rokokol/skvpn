@@ -2226,6 +2226,10 @@ if [[ "$plugins" == "ClientTransportPlugin obfs4 exec $SKVPN_ROOT/plugins/obfs4p
   grep -qx 'ExecStart=/usr/bin/tor -f /etc/sing-box/torrc' "$unit" &&
   grep -qx "User=$user" "$unit" &&
   grep -qx 'ConditionPathExists=/var/lib/skvpn/tor-bridges.conf' "$unit" &&
+  grep -qx 'BindReadOnlyPaths=/etc/sing-box/tor-resolv.conf:/etc/resolv.conf' "$unit" &&
+  grep -qx 'Environment=GODEBUG=netdns=go' "$unit" &&
+  [[ "$(<"$(guard_stage sing-box/tor-resolv.conf)")" == "nameserver 172.19.0.2" ]] &&
+  grep -q '/tor-resolv\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   grep -qx "u $user - \"skvpn Tor\"" "$(guard_stage sysusers.d/skvpn-tor.conf)" &&
   grep -q 'skvpn-tor.service' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
   ok
@@ -2237,6 +2241,7 @@ world installer-drops-tor-without-its-flag
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" --tor >/dev/null
 "$REPO/install.sh" --destdir "$SKVPN_ROOT/stage" >/dev/null
 if [[ ! -e "$(guard_stage sing-box/tor.json)" && ! -e "$(guard_stage sing-box/torrc)" &&
+! -e "$(guard_stage sing-box/tor-resolv.conf)" &&
 ! -e "$(guard_stage systemd/system/skvpn-tor.service)" && ! -e "$(guard_stage sysusers.d/skvpn-tor.conf)" ]] &&
   ! grep -qE 'skvpn-tor|/torrc$|/tor\.json$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   jq -e '.outbounds | all(.tag != "tor")' "$(guard_stage sing-box/base.d/00-base.json)" >/dev/null; then
@@ -2519,6 +2524,17 @@ if grep -qx "SocksPort 127.0.0.1:$(tor_policy socksPort)" "$torrc" &&
   ok
 else
   fail "the torrc lost a port, the transport plugin or the bridges include"
+fi
+
+# Tor's own lookups go to the address sing-box serves DNS on inside the TUN, the one after
+# the TUN's own, so they reach sing-box from Tor's user and not from systemd-resolved's
+world tor-resolver-is-the-tun-dns
+render=(python3 "$REPO/non-nix/render-base.py" --skip-path-check --tor --tor-plugin obfs4=/x --render tor-resolv)
+if [[ "$("${render[@]}")" == "nameserver 172.19.0.2" &&
+"$("${render[@]}" --tun-address fd00::1/126 --tun-address 10.7.0.1/30)" == "nameserver 10.7.0.2" ]]; then
+  ok
+else
+  fail "Tor's resolver is not the address after the TUN's IPv4 one"
 fi
 
 world tor-bridges-update-asks-moat-for-the-base-country

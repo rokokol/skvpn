@@ -236,6 +236,16 @@ let
     %include ${torBridges}
   '';
 
+  # Bound over Tor's /etc/resolv.conf: render-base.py's tor_resolv says why. sing-box serves
+  # DNS on the address after the TUN's IPv4 one
+  tun4 = lib.findFirst (address: !lib.hasInfix ":" address) null cfg.tun.address;
+  torResolv =
+    let
+      octets = lib.splitString "." (lib.head (lib.splitString "/" tun4));
+      next = lib.toInt (lib.last octets) + 1;
+    in
+    "nameserver ${lib.concatStringsSep "." (lib.init octets ++ [ (toString next) ])}\n";
+
   # The Clash API file for `skvpn top`, written at every start by root. It cannot be an
   # etc entry: the secret would sit in the world-readable store. The secret lives in a
   # root-only file and is made once; base.d gets a copy only the sing-box group reads, and
@@ -868,6 +878,10 @@ in
           wide catches everything
         '';
       }
+      {
+        assertion = cfg.tor.enable -> tun4 != null;
+        message = "services.skvpn.tor needs an IPv4 tun.address: Tor's resolver is the TUN's";
+      }
     ];
 
     environment.systemPackages = [
@@ -890,6 +904,7 @@ in
     // lib.optionalAttrs cfg.tor.enable {
       "sing-box/tor.json".text = builtins.toJSON torProfile;
       "sing-box/torrc".text = torrc;
+      "sing-box/tor-resolv.conf".text = torResolv;
     };
 
     # Written by root, contents read by the service user; the directory itself lists for
@@ -945,13 +960,19 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       unitConfig.ConditionPathExists = torBridges;
-      restartTriggers = [ torrc ];
+      restartTriggers = [
+        torrc
+        torResolv
+      ];
 
       serviceConfig = {
         User = tor.user;
         Group = tor.user;
         ExecStart = "${lib.getExe cfg.tor.package} -f /etc/sing-box/torrc";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+        # The transports resolve their brokers straight into the TUN, as Tor's user
+        BindReadOnlyPaths = [ "/etc/sing-box/tor-resolv.conf:/etc/resolv.conf" ];
+        Environment = [ "GODEBUG=netdns=go" ];
         # Tor refuses a DataDirectory anyone but its user can read
         StateDirectory = "skvpn-tor";
         StateDirectoryMode = "0700";

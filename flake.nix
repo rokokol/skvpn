@@ -214,7 +214,7 @@
                   "offFirewall", "offPackages", "offServices", "offSudoRules", "offTmpfiles", "offUsers",
                   "packages", "postStart", "presetsBase", "restoreOffServices", "services",
                   "splitBase", "splitBroken", "splitSingBoxBroken", "stopPost", "sudoRules", "timerInterval",
-                  "tmpfiles", "torBase", "torLyrebird", "torProfile", "torUnit", "torUsers", "torrc",
+                  "tmpfiles", "torBase", "torLyrebird", "torProfile", "torResolv", "torUnit", "torUsers", "torrc",
                   "unitPath", "users"
                 ]' "the dump no longer has the keys these checks read"
 
@@ -234,6 +234,7 @@
                 want '.torUnit.serviceConfig.User == "${policy.tor.user}" and .torUnit.serviceConfig.StateDirectoryMode == "0700"' "Tor does not run as the user the profile tells it apart by"
                 want '.torUnit.unitConfig.ConditionPathExists == "/var/lib/skvpn/tor-bridges.conf"' "Tor starts before it has any bridge"
                 want '.torUnit.wantedBy == ["multi-user.target"]' "Tor does not come up on boot"
+                want '.torResolv == "nameserver 172.19.0.2\n" and .torUnit.serviceConfig.BindReadOnlyPaths == ["/etc/sing-box/tor-resolv.conf:/etc/resolv.conf"] and .torUnit.serviceConfig.Environment == ["GODEBUG=netdns=go"]' "Tor's transports resolve through systemd-resolved, which the tor profile cannot tell apart"
                 want '.torUsers | index("${policy.tor.user}")' "the Tor user is missing"
                 want '(.users | index("${policy.tor.user}") | not) and (.bareEtc | index("sing-box/tor.json") | not) and (.bareServices | index("skvpn-tor") | not)' "Tor is set up while tor.enable is off"
 
@@ -461,10 +462,16 @@
                   jq
                   python3
                 ];
-                inherit (wiring) torProfile torrc torBase;
+                inherit (wiring)
+                  torProfile
+                  torrc
+                  torResolv
+                  torBase
+                  ;
                 passAsFile = [
                   "torProfile"
                   "torrc"
+                  "torResolv"
                   "torBase"
                 ];
               }
@@ -482,6 +489,8 @@
                 diff -u module.json renderer.json || fail "the module and the renderer write different tor profiles"
                 render --render torrc >renderer.torrc
                 diff -u "$torrcPath" renderer.torrc || fail "the module and the renderer write different torrcs"
+                render --render tor-resolv >renderer.resolv
+                diff -u "$torResolvPath" renderer.resolv || fail "the module and the renderer give Tor different resolvers"
                 pick='{onion: [.dns.servers[] | select(.tag == "onion")], dns: .dns.rules[0], tor: [.outbounds[] | select(.tag == "tor")], route: .route.rules[2]}'
                 render | jq -S "$pick" >renderer-base.json
                 jq -S "$pick" "$torBasePath" >module-base.json

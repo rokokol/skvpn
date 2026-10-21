@@ -157,7 +157,9 @@ parser.add_argument(
 )
 # The same options render every file, so they can never disagree about the base
 parser.add_argument(
-    "--render", choices=("base", "guard", "tor", "torrc"), default="base"
+    "--render",
+    choices=("base", "guard", "tor", "torrc", "tor-resolv"),
+    default="base",
 )
 args = parser.parse_args()
 if args.tor and not args.tor_plugin:
@@ -373,6 +375,21 @@ def torrc():
     return "\n".join(lines) + "\n"
 
 
+def tor_resolv():
+    """The resolv.conf bound into Tor's unit. A transport resolves its broker through
+    glibc otherwise, and the query reaches sing-box from systemd-resolved, which the
+    `tor` profile's rule for Tor's user cannot match. sing-box serves DNS on the address
+    after the TUN's own"""
+    tun4 = [
+        address
+        for address in map(ipaddress.ip_interface, inbound["address"])
+        if address.version == 4
+    ]
+    if not tun4:
+        parser.error("--tor needs an IPv4 --tun-address: Tor's resolver is the TUN's")
+    return f"nameserver {tun4[0].ip + 1}\n"
+
+
 # Laid over the base the way nix/module.nix lays it: sing-box sorts every file by
 # path, keeps the first scalar and appends arrays, so this cannot move `final` and its
 # rules land after the base's. `proxy` is direct here instead, and the names nobody
@@ -410,6 +427,11 @@ if args.render == "torrc":
     if not args.tor:
         parser.error("--render torrc needs --tor")
     sys.stdout.write(torrc())
+    sys.exit(0)
+if args.render == "tor-resolv":
+    if not args.tor:
+        parser.error("--render tor-resolv needs --tor")
+    sys.stdout.write(tor_resolv())
     sys.exit(0)
 
 # `null` for the guard or the tor profile means there is none: install.sh drops its file
