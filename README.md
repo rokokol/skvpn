@@ -176,7 +176,10 @@ The `tor` profile is a fallback, not anonymity. Only TCP goes through Tor, so ca
 
 To update the phone after the subscription or the policy changes, run step 2 again and import the new file over the old profile
 
-For Tor on the phone, install [Orbot](https://orbot.app/), turn on Settings → Power User Mode so that it runs as a proxy without a VPN of its own, start it, and export with `--tor`. The selector then has a `tor` exit beside the nodes, and `.onion` sites go to Orbot from every app. Orbot's own traffic leaves direct, and Orbot fetches its own bridges
+For Tor on the phone, install [Orbot](https://orbot.app/), turn on Settings → Power User Mode so that it runs as a proxy without a VPN of its own, start it, and export with `--tor`. The selector then has a `tor` exit beside the nodes, and `.onion` sites go to Orbot from every app, which a test on a phone confirmed. Orbot fetches its own bridges, and its own traffic is meant to leave direct
+
+> [!WARNING]
+> The `tor` exit is not proven yet. On one phone, picking it cut Orbot off from the network: its own traffic seemed to go through the exit, that is into itself, until a node was picked again. Keep a node picked and use `.onion` sites, or try the exit and report what you see
 
 `sudo skvpn export --sfa` writes one config for [sing-box for Android](https://sing-box.sagernet.org/clients/android/) that carries the host's policy to the phone. Every profile, or the named ones, sits in one group the app switches between on the fly. Sites the host sends direct go direct here too, with the rule-sets fetched through the node by URL; process entries of the split list stay behind, since they name the host's programs. The LAN stays outside the tunnel, so devices there still reach the phone. When the host runs Tailscale, the phone joins the tailnet from inside the same app, since Android lets only one VPN run at a time; the app shows the login link under Tools → Endpoints. When the host has a guard, the app gets a Direct mode beside the usual Rule one: switching to it sends everything direct but keeps refusing the guarded sites, which is the phone's way of being off. The file carries the nodes' credentials, so move it the way you would move a password
 
