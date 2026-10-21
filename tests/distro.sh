@@ -35,12 +35,12 @@ declare -A IMAGE=(
 INSTALL_FLAGS=(--no-systemd --docker --tailscale --syncthing --guard-zone example.org --split curl --split path '/opt/*/bin/tor' --split ip 10.99.0.0/16 --split domain https://ubuntu.com/)
 UNINSTALL_FLAGS=(--no-systemd)
 
-# Tor where the distribution packages a transport for it: Arch has none outside the AUR,
-# so its preflight could only print guidance nobody can run unattended
+# Tor on every distribution: Arch's transport is an AUR package, which the harness builds
+# the way `paru -S` would
 declare -A TOR_FLAGS=(
   [debian]=--tor
   [ubuntu]=--tor
-  [arch]=""
+  [arch]=--tor
   [fedora]=--tor
 )
 
@@ -461,6 +461,37 @@ die() {
   exit 1
 }
 
+# The documented equivalent of `paru -S <pkgs>`, for the one arm whose printed line cannot
+# run: paru itself lives in the AUR, so a base container has no way to have it. base-devel,
+# a throwaway builder (makepkg refuses root), the PKGBUILD's own depends and makedepends
+# installed by pacman, the keys of its validpgpkeys imported so makepkg verifies the signed
+# source instead of skipping the check, makepkg without -si, then pacman -U as root
+aur_install() {
+  pacman -S --noconfirm --needed base-devel git >/dev/null
+  id builder >/dev/null 2>&1 || useradd -m builder
+  local pkg dir deps key keys
+  for pkg in "$@"; do
+    dir=/home/builder/$pkg
+    runuser -u builder -- git clone --depth 1 "https://aur.archlinux.org/$pkg.git" "$dir"
+    deps=$(runuser -u builder -- bash -c \
+      "cd '$dir' && source PKGBUILD >/dev/null 2>&1; echo \"\${makedepends[*]:-} \${depends[*]:-}\"")
+    local dep_list=()
+    read -ra dep_list <<<"$deps"
+    if ((${#dep_list[@]})); then
+      pacman -S --noconfirm --needed "${dep_list[@]}" >/dev/null
+    fi
+    keys=$(runuser -u builder -- bash -c \
+      "cd '$dir' && source PKGBUILD >/dev/null 2>&1; echo \"\${validpgpkeys[*]:-}\"")
+    for key in $keys; do
+      runuser -u builder -- gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$key" ||
+        runuser -u builder -- gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key" ||
+        return 1
+    done
+    runuser -u builder -- bash -c "cd '$dir' && makepkg --noconfirm" >/dev/null || return 1
+    pacman -U --noconfirm "$dir"/*.pkg.tar* >/dev/null
+  done
+}
+
 say "bootstrap ($distro)"
 bash -c "${BOOTSTRAP[$distro]}" >/dev/null
 
@@ -510,7 +541,15 @@ if ((rc != 0)); then
     # yes answers "y" to [Y/n]-style prompts; dnf treats an empty answer as No. Fed by
     # process substitution, not a pipe: pipefail would turn yes's own SIGPIPE death —
     # normal for a command that never reads stdin — into a failed pipeline
-    bash -c "$cmd" < <(yes 2>/dev/null) || die "printed guidance failed: $cmd"
+    case "$cmd" in
+      "paru -S "*)
+        read -ra aur_pkgs <<<"${cmd#paru -S }"
+        aur_install "${aur_pkgs[@]}" || die "the AUR build failed for: $cmd"
+        ;;
+      *)
+        bash -c "$cmd" < <(yes 2>/dev/null) || die "printed guidance failed: $cmd"
+        ;;
+    esac
   done <<<"$commands"
 
   say "install succeeds once the guidance has been followed"

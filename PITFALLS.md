@@ -104,6 +104,20 @@ timeout 3 sing-box run -C base.d -c guard.json
 
 ---
 
+## A container on a censored host cannot clone from gitlab.torproject.org
+
+**Where it bites:** the Arch run of `tests/distro.sh`, which builds `lyrebird-proxy` from the AUR, and whose PKGBUILD clones `gitlab.torproject.org`. A developer host behind a national filter meets it. A hosted CI runner does not
+
+**Reproduction:** on a host with skvpn up and Docker's bridge excluded from the TUN, run `docker run --rm --dns 1.1.1.1 archlinux:latest` and `curl -v https://gitlab.torproject.org/` from inside. The same command on the host succeeds in about one second
+
+**Misleading result:** makepkg spends about five minutes and ends with `Failure while downloading lyrebird-proxy git repo`, as if the AUR package or the signature check were broken
+
+**Mechanism:** two separate blocks sit on the direct path, which a container takes because the TUN excludes `docker0`. First, a UDP answer from 1.1.1.1 or 8.8.8.8 for a `torproject.org` name comes back with the `aa` flag and no records, while the same query over TCP is answered. Second, the TCP connection to 204.8.99.149 opens, and then a TLS handshake with the SNI `gitlab.torproject.org` (and a plain HTTP request with that Host) never completes. The same address answers a handshake with the SNI `example.com` at once. The host's own traffic enters the TUN and leaves through the node, so it sees neither
+
+**Safe route:** run the Arch distro test from a host whose containers reach the internet unfiltered, or on a runner. To test the harness here, point `url.<mirror>.insteadOf` at a clone made on the host, which keeps the signed tag and so the signature check
+
+---
+
 ## An Xray exit sends TLS to the SNI, not to the address
 
 **Where it bites:** a profile whose exit is an Xray inbound with `sniffing.destOverride` and without `routeOnly`. Any TLS whose SNI names another host than its address meets it, and Tor without bridges meets it first

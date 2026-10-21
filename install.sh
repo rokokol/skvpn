@@ -487,9 +487,9 @@ if ((${#missing[@]})); then
     if ((tor_missing)); then
       case " $distro " in
         *" arch "*)
-          printf '\nInstall Tor on Arch/CachyOS; its transports are only in the AUR,\n'
-          printf 'as lyrebird-proxy and snowflake-pt-client:\n'
+          printf '\nInstall Tor and its transports on Arch/CachyOS; lyrebird-proxy is in the AUR:\n'
           printf '  $ sudo pacman -S --needed tor\n'
+          printf '  $ paru -S lyrebird-proxy\n'
           ;;
         *" debian "* | *" ubuntu "*)
           printf '\nInstall Tor and its transports on Debian/Ubuntu:\n'
