@@ -354,7 +354,13 @@ if args.tor:
                 {"action": "route", "server": "tor"},
             ],
         },
-        "route": {"rules": [{"user": tor_user, "outbound": "direct"}]},
+        # Tor's SOCKS carries no UDP; refused at once, QUIC falls back to TCP at once
+        "route": {
+            "rules": [
+                {"user": tor_user, "outbound": "direct"},
+                {"network": ["udp"], "action": "reject"},
+            ]
+        },
     }
 
 

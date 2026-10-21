@@ -2640,6 +2640,19 @@ else
   fail "up tor did not run the rendered profile, or the profile lets Tor route into itself"
 fi
 
+# Tor's SOCKS carries no UDP: a refusal at once sends QUIC back to TCP, where a SOCKS
+# request Tor rejects would leave it waiting. Tor's own UDP, snowflake's WebRTC, leaves first
+world tor-profile-refuses-udp-after-tors-own
+tor_on
+if jq -e --arg u "$(tor_policy user)" '.route.rules |
+    (map(.user == [$u]) | index(true)) as $own |
+    (map(.network == ["udp"] and .action == "reject") | index(true)) as $udp |
+    $own != null and $udp != null and $own < $udp' "$SKVPN_ROOT/etc/sing-box/tor.json" >/dev/null; then
+  ok
+else
+  fail "the tor profile hands UDP to Tor's SOCKS, or refuses it before Tor's own"
+fi
+
 world up-tor-via-takes-tor-through-a-node
 sv add "$HY2" >/dev/null
 tor_on

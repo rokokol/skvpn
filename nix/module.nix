@@ -220,6 +220,11 @@ let
         user = torUser;
         outbound = "direct";
       }
+      # Tor's SOCKS carries no UDP; refused at once, QUIC falls back to TCP at once
+      {
+        network = [ "udp" ];
+        action = "reject";
+      }
     ];
   };
 
