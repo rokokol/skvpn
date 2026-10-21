@@ -148,3 +148,17 @@ openssl s_client -connect 140.82.121.4:443 -servername www.qz7vk3xptn2b.com </de
 **Mechanism:** a Go program built with cgo resolves through glibc when `nsswitch.conf` names a source Go does not implement, such as `resolve`. glibc asks nscd first, before it reads `nsswitch.conf`, and the `resolve` source asks systemd-resolved directly, so neither reads `resolv.conf`. The resolver sends the query into the TUN as its own user, so sing-box sees `systemd-resolve`, not Tor's user. The query falls through to the `tor` server, the DNSPort of a Tor that waits for this very name. On another profile, the same query goes to the remote server through the node and gets an answer
 
 **Safe route:** Tor's unit binds `tor-resolv.conf` over `/etc/resolv.conf`, with the TUN's DNS address first, and `tor-nsswitch.conf` over `/etc/nsswitch.conf`, with `hosts: files dns`. It also hides `/run/nscd`. Every program in the unit then sends its queries into the TUN itself, as Tor's user, whatever language it is written in. `GODEBUG=netdns=go` would do the same for Go alone, and a transport in another language would bring the loop back. The remote DNS server follows as a fallback for a host where no sing-box runs; never put `127.0.0.53` there, because a slow first answer would send the query back through systemd-resolved
+
+---
+
+## Ubuntu refuses the suite's user namespace
+
+**Where it bites:** the suite case `tor-unit-resolves-through-the-tun-dns`, which runs `unshare -rmn` as an ordinary user, in `nix flake check` and in a plain `./tests/run.sh` alike. A GitHub runner on Ubuntu 24.04 meets it, and so does a developer on Ubuntu 24.04 or later
+
+**Reproduction:** on Ubuntu 24.04 with its default AppArmor settings, run `unshare -rmn true` as an ordinary user
+
+**Misleading result:** the case fails with `answer: none`, as if Tor's unit leaked its lookups to nscd or systemd-resolved. The cause is in the case's own last line: `unshare: write failed /proc/self/uid_map: Operation not permitted`. On NixOS and on most other distributions the same case passes
+
+**Mechanism:** Ubuntu sets `kernel.apparmor_restrict_unprivileged_userns=1`, so an unconfined program cannot map itself to root in a new user namespace. The case needs that mapping to mount the unit's files and to bring up its own loopback
+
+**Safe route:** the `build` workflow sets the sysctl to 0 before the suite runs. On a workstation, run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` for the session. Do not skip the case: it is the only check that resolves through glibc as Tor's unit would

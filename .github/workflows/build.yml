@@ -22,6 +22,10 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - uses: cachix/install-nix-action@v31
+      # The suite lays Tor's unit out in an unprivileged user namespace, which Ubuntu's
+      # AppArmor refuses by default (PITFALLS.md)
+      - name: unprivileged user namespaces for the suite
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: VERSION matches CHANGELOG
         run: |
           ver=$(cat VERSION)
