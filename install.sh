@@ -598,7 +598,7 @@ render_args=("${CONFIG_ARGS[@]}" --sing-box "$SING_BOX")
 ((live)) || render_args+=(--skip-path-check)
 if ((TOR)); then
   render_args+=(--tor --tor-data-dir "$LOCALSTATEDIR/lib/skvpn-tor"
-    --tor-bridges "$LOCALSTATEDIR/lib/skvpn/tor-bridges.conf")
+    --tor-bridges "$LOCALSTATEDIR/lib/skvpn/tor-bridges.d")
   [[ -z "$TOR_SOCKS_PORT" ]] || render_args+=(--tor-socks-port "$TOR_SOCKS_PORT")
   for plugin in "${tor_plugins[@]}"; do
     render_args+=(--tor-plugin "$plugin")
@@ -838,8 +838,8 @@ else
   rm -f "$guard_config" "$guard_unit"
 fi
 
-# Tor under a user of its own, apart from the tunnel. Without the bridges file it does not
-# start; `skvpn tor bridges update` writes the file and starts it
+# Tor under a user of its own, apart from the tunnel. Without a bridge it does not start;
+# `skvpn tor bridges update` or `bridges add` writes one and starts it
 if ((TOR)); then
   install -Dm644 "$rendered_tor" "$tor_config"
   rec "$tor_config"
@@ -858,7 +858,7 @@ EOF
 Description=Tor for skvpn: .onion names and skvpn up tor
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=$LOCALSTATEDIR/lib/skvpn/tor-bridges.conf
+ConditionDirectoryNotEmpty=$LOCALSTATEDIR/lib/skvpn/tor-bridges.d
 
 [Service]
 User=$tor_user

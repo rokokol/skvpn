@@ -153,7 +153,7 @@ parser.add_argument("--tor-plugin", action="append", type=tor_plugin, default=[]
 parser.add_argument("--tor-socks-port", type=int, default=TOR["socksPort"])
 parser.add_argument("--tor-data-dir", type=absolute_path, default="/var/lib/skvpn-tor")
 parser.add_argument(
-    "--tor-bridges", type=absolute_path, default="/var/lib/skvpn/tor-bridges.conf"
+    "--tor-bridges", type=absolute_path, default="/var/lib/skvpn/tor-bridges.d"
 )
 # The same options render every file, so they can never disagree about the base
 parser.add_argument(
@@ -366,7 +366,8 @@ if args.tor:
 
 def torrc():
     """Tor's own config. The second SOCKS port is the one sing-box dials; the first is
-    the user's. The bridges file is CLI state, written by `skvpn tor bridges update`"""
+    the user's. The bridges directory is CLI state: `skvpn tor bridges update` writes
+    Moat's file in it, and `bridges add` the user's own"""
     lines = [
         f"DataDirectory {args.tor_data_dir}",
         f"SocksPort 127.0.0.1:{args.tor_socks_port}",

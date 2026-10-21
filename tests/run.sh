@@ -2218,14 +2218,14 @@ user=$(tor_policy user)
 if [[ "$plugins" == "ClientTransportPlugin obfs4 exec $SKVPN_ROOT/plugins/obfs4proxy"$'\n'"ClientTransportPlugin snowflake exec $SKVPN_ROOT/plugins/snowflake-client" &&
   "$with_lyrebird" == "ClientTransportPlugin obfs4,webtunnel,snowflake exec $SKVPN_ROOT/plugins/lyrebird" ]] &&
   grep -qx 'DataDirectory /var/lib/skvpn-tor' "$torrc" &&
-  grep -qx '%include /var/lib/skvpn/tor-bridges.conf' "$torrc" &&
+  grep -qx '%include /var/lib/skvpn/tor-bridges.d' "$torrc" &&
   jq -e --slurpfile want <(python3 "$REPO/non-nix/render-base.py" --skip-path-check --tor \
     --tor-plugin obfs4=/x --render tor) '. == $want[0]' "$(guard_stage sing-box/tor.json)" >/dev/null &&
   jq -e --arg o "$(tor_policy onion)" '.route.rules | any(.domain_suffix == [$o] and .outbound == "tor")' \
     "$(guard_stage sing-box/base.d/00-base.json)" >/dev/null &&
   grep -qx 'ExecStart=/usr/bin/tor -f /etc/sing-box/torrc' "$unit" &&
   grep -qx "User=$user" "$unit" &&
-  grep -qx 'ConditionPathExists=/var/lib/skvpn/tor-bridges.conf' "$unit" &&
+  grep -qx 'ConditionDirectoryNotEmpty=/var/lib/skvpn/tor-bridges.d' "$unit" &&
   grep -qx 'nameserver 172.19.0.2' "$(guard_stage sing-box/tor-resolv.conf)" &&
   grep -q '/tor-resolv\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   grep -q '/tor-nsswitch\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
@@ -2466,7 +2466,8 @@ tor_on() {
   "${render[@]}" --render tor >"$conf/tor.json"
   "${render[@]}" --render torrc >"$conf/torrc"
 }
-bridges_file() { printf '%s/var/lib/skvpn/tor-bridges.conf' "$SKVPN_ROOT"; }
+bridges_file() { printf '%s/var/lib/skvpn/tor-bridges.d/moat.conf' "$SKVPN_ROOT"; }
+own_file() { printf '%s/var/lib/skvpn/tor-bridges.d/own.conf' "$SKVPN_ROOT"; }
 
 # Moat on loopback: answers every POST with $SKVPN_ROOT/moat.json and logs its body
 moat_up() {
@@ -2519,7 +2520,7 @@ if grep -qx "SocksPort 127.0.0.1:$(tor_policy socksPort)" "$torrc" &&
   grep -qx "DNSPort 127.0.0.1:$(tor_policy dnsPort)" "$torrc" &&
   grep -qx 'ClientTransportPlugin obfs4,snowflake exec /usr/bin/lyrebird' "$torrc" &&
   grep -qx 'UseBridges 1' "$torrc" &&
-  grep -qx '%include /var/lib/skvpn/tor-bridges.conf' "$torrc"; then
+  grep -qx '%include /var/lib/skvpn/tor-bridges.d' "$torrc"; then
   ok
 else
   fail "the torrc lost a port, the transport plugin or the bridges include"
@@ -2648,6 +2649,73 @@ else
 fi
 moat_down
 
+# Lines pasted from a bridge bot, with or without the torrc's own `Bridge` word, blank
+# lines and a repeat among them, land beside Moat's and start Tor
+world tor-bridges-add-takes-pasted-lines
+tor_on
+out=$(printf 'Bridge obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0\n\nobfs4 203.0.113.6:9001 BBBB cert=b iat-mode=0\nobfs4 203.0.113.5:443 AAAA cert=a iat-mode=0\n' |
+  sv tor bridges add 2>&1) || true
+if [[ "$(grep -c '^Bridge ' "$(own_file)" 2>/dev/null)" == 2 ]] &&
+  grep -qx 'Bridge obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0' "$(own_file)" &&
+  grep -qx 'Bridge obfs4 203.0.113.6:9001 BBBB cert=b iat-mode=0' "$(own_file)" &&
+  [[ ! -e "$(bridges_file)" ]] && grep -qx 'reload-or-restart skvpn-tor.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "bridges add lost a pasted line, kept a repeat, touched Moat's file or did not start Tor: $out"
+fi
+
+# A bridge this Tor cannot run, one on a LAN address and a line that is no bridge at all
+# are refused whole, and the own file stays as it was
+world tor-bridges-add-refuses-what-tor-cannot-use
+tor_on
+sv tor bridges add 'obfs4 203.0.113.7:443 CCCC cert=c iat-mode=0' >/dev/null 2>&1 || true
+before=$(cat "$(own_file)" 2>/dev/null || true)
+refused=0
+for line in 'webtunnel [2001:db8::2]:443 DDDD url=https://wt.example/y' \
+  'obfs4 192.168.1.5:443 EEEE cert=e iat-mode=0' 'not a bridge'; do
+  sv tor bridges add 'obfs4 203.0.113.8:443 FFFF cert=f iat-mode=0' "$line" >/dev/null 2>&1 ||
+    refused=$((refused + 1))
+done
+if [[ "$refused" == 3 && -n "$before" && "$(cat "$(own_file)" 2>/dev/null || true)" == "$before" ]]; then
+  ok
+else
+  fail "bridges add took a bridge Tor cannot use, or wrote part of a refused batch"
+fi
+
+world tor-bridges-update-keeps-own-bridges
+tor_on --preset russia
+sv tor bridges add 'obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0' >/dev/null 2>&1 || true
+moat_answer
+moat_up
+sv tor bridges update >/dev/null 2>&1 || true
+moat_down
+if grep -qx 'Bridge obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0' "$(own_file)" &&
+  grep -qx 'Bridge snowflake 192.0.2.3:80 AAAA url=https://broker.example/' "$(bridges_file)" &&
+  ! grep -q 203.0.113.5 "$(bridges_file)"; then
+  ok
+else
+  fail "bridges update dropped the own bridges or mixed them into Moat's file"
+fi
+
+# rm takes the address `ls` shows; the last bridge of all stops Tor, which would refuse
+# a config with UseBridges and none to use
+world tor-bridges-rm-drops-own-bridges
+tor_on
+printf 'obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0\nobfs4 203.0.113.6:9001 BBBB cert=b iat-mode=0\n' |
+  sv tor bridges add >/dev/null 2>&1 || true
+listed=$(sv tor bridges ls 2>&1) || true
+sv tor bridges rm 203.0.113.5:443 >/dev/null 2>&1 || true
+one=$(grep -c '^Bridge ' "$(own_file)" 2>/dev/null) || true
+unknown=0
+sv tor bridges rm 203.0.113.99:1 >/dev/null 2>&1 || unknown=$?
+sv tor bridges rm 203.0.113.6:9001 >/dev/null 2>&1 || true
+if [[ "$listed" == *"203.0.113.5:443"* && "$listed" == *"203.0.113.6:9001"* && "$one" == 1 &&
+  "$unknown" != 0 && ! -e "$(own_file)" ]] && grep -qx 'stop skvpn-tor.service' "$SYSTEMCTL_LOG"; then
+  ok
+else
+  fail "bridges rm missed the address ls shows, took an unknown one, or left Tor on no bridges: $listed"
+fi
+
 world tor-commands-without-tor-configured-fail
 sv add "$HY2" >/dev/null
 if ! sv tor bridges update >/dev/null 2>&1 && ! sv up tor >/dev/null 2>&1 && [[ ! -e $(profile tor) ]]; then
@@ -2743,10 +2811,12 @@ moat_answer
 moat_up
 sv tor bridges update >/dev/null 2>&1 || true
 moat_down
+sv tor bridges add 'obfs4 203.0.113.5:443 AAAA cert=a iat-mode=0' >/dev/null 2>&1 || true
 export FAKE_JOURNAL=$'Oct 20 [notice] Bootstrapped 14% (handshake): Handshaking\nOct 20 [notice] Bootstrapped 73% (loading_descriptors): Loading relay descriptors'
 export FAKE_TOR_STATE=active
 out=$(sv tor 2>&1) || true
 if [[ "$out" == *73%* && "$out" != *14%* && "$out" == *"obfs4 2"* && "$out" == *"snowflake 1"* &&
+  "$out" == *"own"*"obfs4 1"* &&
   "$out" == *ru* && "$out" == *"127.0.0.1:$(tor_policy socksPort)"* ]]; then
   ok
 else

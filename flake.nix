@@ -233,10 +233,10 @@
                 want '.torProfile | fromjson | .route.rules[1] == {"network": ["udp"], "action": "reject"}' "UDP waits on Tor's SOCKS, which refuses it, before QUIC falls back"
                 want '.torProfile | fromjson | .dns.rules == [{"user": ["${policy.tor.user}"], "action": "route", "server": "bootstrap"}, {"action": "route", "server": "tor"}]' "names do not go to Tor's DNSPort, or Tor's own would wait on itself"
                 want '.torrc | split("\n") | index("SocksPort 127.0.0.1:19050") and index("SocksPort 127.0.0.1:${toString policy.tor.routePort} IsolateDestAddr") and index("DNSPort 127.0.0.1:${toString policy.tor.dnsPort}")' "the torrc lost a port"
-                want '.torrc | split("\n") | index("UseBridges 1") and index("%include /var/lib/skvpn/tor-bridges.conf")' "the torrc does not take the bridges the CLI writes"
+                want '.torrc | split("\n") | index("UseBridges 1") and index("%include /var/lib/skvpn/tor-bridges.d")' "the torrc does not take the bridges the CLI writes"
                 want '.torrc | test("ClientTransportPlugin ${lib.concatStringsSep "," policy.tor.transports} exec /nix/store/[^\n ]*/bin/lyrebird\n")' "the torrc does not run lyrebird for every transport Moat is asked for"
                 want '.torUnit.serviceConfig.User == "${policy.tor.user}" and .torUnit.serviceConfig.StateDirectoryMode == "0700"' "Tor does not run as the user the profile tells it apart by"
-                want '.torUnit.unitConfig.ConditionPathExists == "/var/lib/skvpn/tor-bridges.conf"' "Tor starts before it has any bridge"
+                want '.torUnit.unitConfig.ConditionDirectoryNotEmpty == "/var/lib/skvpn/tor-bridges.d"' "Tor starts before it has any bridge"
                 want '.torUnit.wantedBy == ["multi-user.target"]' "Tor does not come up on boot"
                 want '(.torBase | fromjson | .dns.servers[] | select(.tag == "remote") | .server) as $remote | (.torResolv | split("\n") | .[0] == "nameserver 172.19.0.2" and .[1] == "nameserver \($remote)") and .torUnit.serviceConfig.BindReadOnlyPaths == ["/etc/sing-box/tor-resolv.conf:/etc/resolv.conf", "/etc/sing-box/tor-nsswitch.conf:/etc/nsswitch.conf"] and .torUnit.serviceConfig.InaccessiblePaths == ["-/run/nscd"] and (.torUnit.serviceConfig.Environment == null)' "Tor's transports resolve through nscd or systemd-resolved, which the tor profile cannot tell apart"
                 want '.torUsers | index("${policy.tor.user}")' "the Tor user is missing"
@@ -535,7 +535,7 @@
                   "singBoxUserGroup", "syncthingFollowPostStart", "torUserGroup"
                 ]' "the dump no longer has the keys these checks read"
 
-                want '.enabledTorUnit | test("ExecStart=/nix/store/[^\n]*/bin/tor -f /etc/sing-box/torrc") and test("User=${policy.tor.user}") and test("ConditionPathExists=/var/lib/skvpn/tor-bridges.conf")' "the Tor unit did not survive the real module set"
+                want '.enabledTorUnit | test("ExecStart=/nix/store/[^\n]*/bin/tor -f /etc/sing-box/torrc") and test("User=${policy.tor.user}") and test("ConditionDirectoryNotEmpty=/var/lib/skvpn/tor-bridges.d")' "the Tor unit did not survive the real module set"
                 want '.torUserGroup == "${policy.tor.user}"' "the Tor user lost its group"
 
                 want '.enabledBroken == []' "an enabled module breaks the system"

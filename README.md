@@ -71,8 +71,10 @@ Came over from my rice, **[rokokol/huix](https://github.com/rokokol/huix)**
 | `skvpn export [<name>]` | the config a profile runs with here — the base, the split list and the profile merged by sing-box itself; the running profile when none is named |
 | `skvpn export --sfa [--no-tailscale] [--tor] [<name>…]` | a whole config for [a phone](#a-phone); `--tor` adds Orbot as one more exit and as the way to `.onion` sites |
 | `skvpn tor [status]` | the state of skvpn's [Tor](#tor): the unit, how far it has bootstrapped, its bridges and its SOCKS address |
-| `skvpn tor bridges [ls]` | the bridges Tor has, by kind, with their country and age; no root |
+| `skvpn tor bridges [ls]` | the bridges Tor has, by kind, with their country and age, and the address of each of your own; no root |
 | `skvpn tor bridges update [--country CC]` | fetch fresh bridges from the Tor Project's Moat service and reload Tor; the country follows the preset the base routes direct |
+| `skvpn tor bridges add [<line>…]` | add bridges of your own, such as the lines a bridge bot hands out, as arguments or pasted on stdin; an update keeps them |
+| `skvpn tor bridges rm <address>…` | remove bridges of your own by the address `ls` shows |
 
 Everything that writes or talks to systemd needs root, and so do `ping`, `measure` and `top` (the profiles and the API secret are root-only); `ls --names`, `status`, `split ls` and a bare `boot` do not
 
@@ -94,7 +96,7 @@ share/skvpn/policy.json             presets, the tailnet and the rule-sets' sour
 /etc/sing-box/torrc                 Tor's own config — rendered with tor.json
 /etc/sing-box/tor-resolv.conf       the resolver Tor's unit sees — rendered with tor.json
 /etc/sing-box/tor-nsswitch.conf     the name service Tor's unit sees — rendered with tor.json
-/var/lib/skvpn/tor-bridges.conf     Tor's bridges — written by `skvpn tor bridges update`
+/var/lib/skvpn/tor-bridges.d/       Tor's bridges — moat.conf by `skvpn tor bridges update`, own.conf by `bridges add`
 /etc/sing-box/profiles/<name>.json  one outbound tagged `proxy` — written by skvpn
 /var/lib/skvpn/active               the last profile brought up — what boot follows by default
 /var/lib/skvpn/boot                 a profile pinned for boot by `skvpn boot`, beating the above
@@ -154,6 +156,8 @@ With `tor.enable` on NixOS, or `--tor` for the installer, skvpn runs a Tor of it
 - `skvpn up tor`, the `tor` profile: everything that would go to a node goes through Tor instead, a way out for when every node is down. `--via <name>` takes Tor's own traffic through that node instead of direct
 
 Tor reaches the network through bridges only, and starts once `skvpn tor bridges update` has fetched them from the Tor Project. The country of the bridges is the one whose preset the base routes direct, so a host with the Russian preset gets bridges meant for Russia; with no preset or with several, `--country` names it. Bridges are never replaced behind your back: an update is a command you run when the ones you have stop working
+
+Moat hands out bridges from a public pool, and those are the first a censor finds and blocks. The Tor Project's Telegram and email bots hand out bridges from other pools: paste their lines into `sudo skvpn tor bridges add`, and Tor uses them beside Moat's. An update replaces only Moat's
 
 The `tor` profile is a fallback, not anonymity. Only TCP goes through Tor, so calls, games and other UDP stop working, and QUIC falls back to TCP. Direct zones and the split list still leave direct, as with any profile. Each site gets a circuit of its own, but an account you are logged in to names you whatever the circuit: the profile hides your address, not who you are. For anonymity use Tor Browser on the SOCKS port
 

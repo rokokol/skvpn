@@ -66,13 +66,16 @@ _skvpn() {
       if ((CURRENT == 3)); then
         local -a subcommands=(
           'status:the unit, its bootstrap, its bridges and its SOCKS port'
-          'bridges:list the bridges, or fetch new ones from Moat'
+          'bridges:list the bridges, fetch new ones from Moat, or add and remove your own'
         )
         _describe -t commands 'tor command' subcommands
       elif ((CURRENT == 4)) && [[ "$words[3]" == bridges ]]; then
-        compadd -- ls update
+        compadd -- ls update add rm
       elif ((CURRENT == 5)) && [[ "$words[4]" == update ]]; then
         compadd -- --country
+      elif ((CURRENT >= 5)) && [[ "$words[4]" == rm ]]; then
+        # The own bridges are the indented two-word lines of `ls`, address second
+        compadd -- ${(f)"$(skvpn tor bridges ls 2>/dev/null | awk 'NF == 2 && $2 ~ /:/ { print $2 }')"}
       fi
       ;;
     boot)

@@ -176,7 +176,7 @@ let
     server = "127.0.0.1";
     server_port = tor.routePort;
   };
-  torBridges = "/var/lib/skvpn/tor-bridges.conf";
+  torBridges = "/var/lib/skvpn/tor-bridges.d";
   torUser = [ tor.user ];
 
   # The sing-box half of the `tor` profile, which `skvpn up tor` copies into the profiles:
@@ -229,8 +229,8 @@ let
   };
 
   # The second SOCKS port is the one sing-box dials, isolating by destination so two sites
-  # never share a circuit; the first is the user's. The bridges file is CLI state, written
-  # by `skvpn tor bridges update`
+  # never share a circuit; the first is the user's. The bridges directory is CLI state:
+  # `skvpn tor bridges update` writes Moat's file in it, and `bridges add` the user's own
   torrc = ''
     DataDirectory /var/lib/skvpn-tor
     SocksPort 127.0.0.1:${toString cfg.tor.socksPort}
@@ -969,14 +969,15 @@ in
     );
 
     # Tor under a user of its own, which is what the `tor` profile tells its traffic apart
-    # by. Without the bridges file it does not start; `skvpn tor bridges update` writes the
-    # file and starts it, and a later update reloads it
+    # by. Without a bridge it does not start; `skvpn tor bridges update` or `bridges add`
+    # writes one and starts it, and a later change reloads it
     systemd.services.skvpn-tor = lib.mkIf cfg.tor.enable {
       description = "Tor for skvpn: .onion names and `skvpn up tor`";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
-      unitConfig.ConditionPathExists = torBridges;
+      # Tor refuses UseBridges with no bridge, so an empty directory keeps it down
+      unitConfig.ConditionDirectoryNotEmpty = torBridges;
       restartTriggers = [
         torrc
         torResolv

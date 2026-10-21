@@ -573,12 +573,17 @@ if [[ -n "${TOR_FLAGS[$distro]}" ]]; then
   # would refuse, and then the whole base with them
   sing-box check -C /etc/sing-box/base.d -c /etc/sing-box/tor.json ||
     die "sing-box refused the base with the tor profile"
-  # Tor refuses UseBridges with no bridge, and the CLI writes them only on request
-  mkdir -p /var/lib/skvpn
+  # Tor refuses UseBridges with no bridge, and the CLI writes them only on request: one in
+  # Moat's file and one in the own file, so this Tor reads the whole directory
+  mkdir -p /var/lib/skvpn/tor-bridges.d
   printf 'Bridge obfs4 192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=AAAA iat-mode=0\n' \
-    >/var/lib/skvpn/tor-bridges.conf
+    >/var/lib/skvpn/tor-bridges.d/moat.conf
+  printf 'Bridge obfs4 192.0.2.2:443 0123456789ABCDEF0123456789ABCDEF01234568 cert=BBBB iat-mode=0\n' \
+    >/var/lib/skvpn/tor-bridges.d/own.conf
   tor --verify-config -f /etc/sing-box/torrc >/dev/null || die "tor refused the torrc"
-  rm /var/lib/skvpn/tor-bridges.conf
+  [[ "$(tor --dump-config short -f /etc/sing-box/torrc 2>/dev/null | grep -c '^Bridge ')" == 2 ]] ||
+    die "tor did not read both bridge files"
+  rm -r /var/lib/skvpn/tor-bridges.d
 fi
 
 say "Docker-in-Docker reaches Ubuntu repositories through the active TUN"

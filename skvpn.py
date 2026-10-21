@@ -89,11 +89,14 @@ RELEASE_UNIT = "skvpn-nft@release.service"
 HELD = "the network stays held until a tunnel is up — `skvpn down --no-guard` lets it go"
 # skvpn's own Tor. tor.json is the sing-box half of the `tor` profile, rendered beside the
 # torrc from the same options, and its presence is the whole question of whether there is
-# a Tor here, as guard.json is for the guard. The bridges file is CLI state the torrc
-# includes; without it the unit does not start
+# a Tor here, as guard.json is for the guard. The bridges directory is CLI state the
+# torrc includes whole; while it is empty the unit does not start. Moat's answer and the
+# user's own bridges are separate files in it, so an update never touches the own ones
 TOR_PROFILE = CONF / "tor.json"
 TORRC = CONF / "torrc"
-TOR_BRIDGES = ROOT / "var/lib/skvpn/tor-bridges.conf"
+TOR_BRIDGES = ROOT / "var/lib/skvpn/tor-bridges.d"
+MOAT_BRIDGES = TOR_BRIDGES / "moat.conf"
+OWN_BRIDGES = TOR_BRIDGES / "own.conf"
 TOR_UNIT = "skvpn-tor.service"
 # The profile `skvpn up tor` writes from tor.json, so no share link may take the name
 TOR_NAME = "tor"
@@ -1224,11 +1227,20 @@ def moat_bridges(country, transports):
     return bridges
 
 
+def bridge_lines(path):
+    """The bridges of one file in the bridges directory, without the `Bridge` word."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    return [line.split(None, 1)[1] for line in lines if line.startswith("Bridge ")]
+
+
 def tor_bridges():
-    """({type: count}, country) of the bridges file; ({}, None) without one."""
+    """({type: count}, country) of Moat's bridges; ({}, None) without them."""
     counts, country = {}, None
     try:
-        lines = TOR_BRIDGES.read_text().splitlines()
+        lines = MOAT_BRIDGES.read_text().splitlines()
     except OSError:
         return counts, country
     for line in lines:
@@ -1240,13 +1252,29 @@ def tor_bridges():
     return counts, country
 
 
+def kinds_text(lines):
+    counts = {}
+    for line in lines:
+        counts[line.split()[0]] = counts.get(line.split()[0], 0) + 1
+    return ", ".join(f"{kind} {count}" for kind, count in counts.items())
+
+
 def bridges_line():
     counts, country = tor_bridges()
-    if not counts:
-        return "  bridges   none — `sudo skvpn tor bridges update` fetches them"
-    age = int((time.time() - TOR_BRIDGES.stat().st_mtime) / 60)
-    kinds = ", ".join(f"{kind} {count}" for kind, count in counts.items())
-    return f"  bridges   {kinds} ({country or 'country unknown'}, {age} min ago)"
+    own = bridge_lines(OWN_BRIDGES)
+    lines = []
+    if counts:
+        age = int((time.time() - MOAT_BRIDGES.stat().st_mtime) / 60)
+        kinds = ", ".join(f"{kind} {count}" for kind, count in counts.items())
+        lines.append(f"  bridges   {kinds} ({country or 'country unknown'}, {age} min ago)")
+    if own:
+        lines.append(f"  own       {kinds_text(own)}")
+    if not lines:
+        lines.append(
+            "  bridges   none — `sudo skvpn tor bridges update` fetches them,"
+            " `sudo skvpn tor bridges add` takes your own"
+        )
+    return "\n".join(lines)
 
 
 def tor_bootstrap():
@@ -1284,33 +1312,121 @@ def bridges_update(args):
     if not transports:
         die(f"{TORRC} runs no transport plugin, so no bridge would work")
     bridges = moat_bridges(country, transports)
-    TOR_BRIDGES.parent.mkdir(parents=True, exist_ok=True)
+    TOR_BRIDGES.mkdir(parents=True, exist_ok=True)
     # Tor reads it as its own user; Moat hands these out to anyone who asks
     lines = [f"# country {country}"] + [f"Bridge {line}" for _, line in bridges]
-    write_private(TOR_BRIDGES, "\n".join(lines) + "\n", 0o644)
+    write_private(MOAT_BRIDGES, "\n".join(lines) + "\n", 0o644)
     for kind in dict.fromkeys(kind for kind, _ in bridges):
         print(f"  +  {kind} ×{sum(1 for k, _ in bridges if k == kind)}")
-    # Tor rereads its config on a reload, bridges included; a unit the missing file kept
-    # from starting starts now
+    tor_reload()
+
+
+def tor_reload():
+    """Tor rereads its config on a reload, bridges included, and a unit the empty
+    directory kept from starting starts now. With no bridge left, Tor would refuse the
+    config and keep running on the old one, so it stops instead."""
+    if not bridge_lines(MOAT_BRIDGES) and not bridge_lines(OWN_BRIDGES):
+        result = probe("stop", TOR_UNIT)
+        if result.returncode != 0:
+            die(f"{failure(result)} — see journalctl -u {TOR_UNIT}")
+        print(f"  ■  {TOR_UNIT}: no bridges left")
+        return
     result = probe("reload-or-restart", TOR_UNIT)
     if result.returncode != 0:
         die(f"{failure(result)} — see journalctl -u {TOR_UNIT}")
     print(f"  ↻  {TOR_UNIT}")
 
 
-TOR_USAGE = "usage: skvpn tor [status | bridges [ls | update [--country CC]]]"
+def bridge_address(line):
+    """The host:port of a bridge line without its `Bridge` word."""
+    return line.split()[1]
+
+
+def own_bridge(line, transports):
+    """A pasted line as a bridge line without the `Bridge` word, or the reason it is
+    refused. Bots hand out lines with and without that word."""
+    words = line.split()
+    if words[:1] == ["Bridge"]:
+        words = words[1:]
+    if len(words) < 3:
+        return None, f"not a bridge line: {line}"
+    if words[0] not in transports:
+        return None, f"{words[0]}: this Tor runs only {', '.join(transports)}"
+    host, _, port = words[1].rpartition(":")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        return None, f"no address:port in: {line}"
+    bridge = " ".join(words)
+    if not reachable_bridge(words[0], bridge):
+        return None, f"{words[1]}: a local address, never reachable"
+    return bridge, None
+
+
+def bridges_add(args):
+    """Own bridges, from the arguments or, with none, one per line from stdin."""
+    need_root()
+    need_tor()
+    transports = tor_transports()
+    pasted = args or sys.stdin.read().splitlines()
+    lines = [line.strip() for line in pasted]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    if not lines:
+        die("usage: skvpn tor bridges add [LINE…] — or paste the lines on stdin")
+    found = [own_bridge(line, transports) for line in lines]
+    errors = [error for _, error in found if error]
+    if errors:
+        die("; ".join(errors))
+    own = bridge_lines(OWN_BRIDGES)
+    added = [bridge for bridge, _ in found if bridge not in own]
+    added = list(dict.fromkeys(added))
+    TOR_BRIDGES.mkdir(parents=True, exist_ok=True)
+    write_private(OWN_BRIDGES, "".join(f"Bridge {b}\n" for b in own + added), 0o644)
+    for bridge in added:
+        print(f"  +  {bridge.split()[0]} {bridge_address(bridge)}")
+    if not added:
+        print("  =  every line is already there")
+        return
+    tor_reload()
+
+
+def bridges_rm(args):
+    """Own bridges out, by the address `bridges ls` shows."""
+    if not args:
+        die("usage: skvpn tor bridges rm ADDRESS…")
+    need_root()
+    need_tor()
+    own = bridge_lines(OWN_BRIDGES)
+    unknown = [a for a in args if a not in map(bridge_address, own)]
+    if unknown:
+        die(f"no own bridge at {', '.join(unknown)} — `skvpn tor bridges ls` lists them")
+    kept = [bridge for bridge in own if bridge_address(bridge) not in args]
+    if kept:
+        write_private(OWN_BRIDGES, "".join(f"Bridge {b}\n" for b in kept), 0o644)
+    else:
+        OWN_BRIDGES.unlink()
+    for address in args:
+        print(f"  -  {address}")
+    tor_reload()
+
+
+TOR_USAGE = (
+    "usage: skvpn tor [status | bridges [ls | update [--country CC]"
+    " | add [LINE…] | rm ADDRESS…]]"
+)
 
 
 def cmd_tor(args):
     """skvpn's own Tor: its state, and the bridges it reaches the network through."""
     if args[:1] == ["bridges"]:
-        if args[1:2] == ["update"]:
-            bridges_update(args[2:])
+        handlers = {"update": bridges_update, "add": bridges_add, "rm": bridges_rm}
+        if args[1:2] and args[1] in handlers:
+            handlers[args[1]](args[2:])
             return
         if args[1:] not in ([], ["ls"]):
             die(TOR_USAGE)
         need_tor()
         print(bridges_line())
+        for bridge in bridge_lines(OWN_BRIDGES):
+            print(f"            {bridge.split()[0]} {bridge_address(bridge)}")
         return
     if args not in ([], ["status"]):
         die(TOR_USAGE)

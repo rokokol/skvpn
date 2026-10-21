@@ -28,9 +28,12 @@ _skvpn() {
       if ((COMP_CWORD == 2)); then
         mapfile -t COMPREPLY < <(compgen -W "status bridges" -- "$cur")
       elif ((COMP_CWORD == 3)) && [[ ${COMP_WORDS[2]} == bridges ]]; then
-        mapfile -t COMPREPLY < <(compgen -W "ls update" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "ls update add rm" -- "$cur")
       elif ((COMP_CWORD == 4)) && [[ ${COMP_WORDS[3]} == update ]]; then
         mapfile -t COMPREPLY < <(compgen -W "--country" -- "$cur")
+      elif ((COMP_CWORD >= 4)) && [[ ${COMP_WORDS[3]} == rm ]]; then
+        # The own bridges are the indented two-word lines of `ls`, address second
+        mapfile -t COMPREPLY < <(compgen -W "$(skvpn tor bridges ls 2>/dev/null | awk 'NF == 2 && $2 ~ /:/ { print $2 }')" -- "$cur")
       fi
       ;;
     rm)
