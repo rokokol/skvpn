@@ -2,7 +2,7 @@
 
 Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioned by [semver](https://semver.org/spec/v2.0.0.html)
 
-## [Unreleased]
+## [3.2.0] - 2026-10-21
 
 ### Added
 
@@ -10,13 +10,13 @@ Kept in the shape of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), v
 - `measure.enable`, `measure.interval` and `measure.textfile` on NixOS run it on a timer as a root oneshot with a memory cap and a time limit, counted from the end of the last run
 - `skvpn top [--count N]` shows the speed through the running tunnel live, from sing-box's Clash API; `d` measures a download through the tunnel, and the screen says the monitor counts it too
 - `monitor.enable` on NixOS opens that API on loopback behind a secret made once and kept in a root-only file. Off by default; turning it on or off restarts the running tunnel once
-- skvpn's own [Tor](README.md#tor), with `tor.enable` on NixOS and `--tor` for the installer: `.onion` sites open from any program through the TUN, a SOCKS port serves programs set up for a proxy, and a profile switch never restarts it. It runs under a user of its own and reaches the network through bridges only
+- skvpn's own [Tor](https://github.com/rokokol/skvpn/blob/v3.2.0/README.md#tor), with `tor.enable` on NixOS and `--tor` for the installer: `.onion` sites open from any program through the TUN, a SOCKS port serves programs set up for a proxy, and a profile switch never restarts it. It runs under a user of its own and reaches the network through bridges only
 - `skvpn up tor [--via <name>]` sends everything that would go to a node through Tor, with Tor's own traffic direct or through the named node; `tor` is now a reserved profile name, so a share link or subscription entry called `tor` is skipped
 - `skvpn tor bridges update [--country CC]` fetches bridges from the Tor Project's Moat service for the country of the preset the base routes direct, and reloads Tor; `skvpn tor` shows the unit, its bootstrap, its bridges and its SOCKS address
 - `skvpn tor bridges add [<line>…]` and `skvpn tor bridges rm <address>…` keep bridges of your own, such as a bridge bot's lines, beside Moat's; an update replaces only Moat's
-- `skvpn export --sfa --tor` gives the phone Orbot as one more exit and as the way to `.onion` sites
+- `skvpn export --sfa --tor` gives the phone Orbot as the way to `.onion` sites and as one more exit; the exit is not proven yet, see the README's phone section
 - `ping`, `measure` and `export --sfa` with no names leave the `tor` profile out
-- a [hold](README.md#hold) between two sing-box processes: `skvpn up`, `restart` and a `down` to the guard refuse this host's outgoing traffic until the new sing-box is ready, and a sing-box that fails does the same until its restart is up. If nothing comes up, `skvpn down --no-guard` lets the network go. A new `skvpn-nft@.service` runs the hold for the CLI
+- a [hold](https://github.com/rokokol/skvpn/blob/v3.2.0/README.md#hold) between two sing-box processes: `skvpn up`, `restart` and a `down` to the guard refuse this host's outgoing traffic until the new sing-box is ready, and a sing-box that fails does the same until its restart is up. If nothing comes up, `skvpn down --no-guard` lets the network go. A new `skvpn-nft@.service` runs the hold for the CLI
 
 ### Changed
 
