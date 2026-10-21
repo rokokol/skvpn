@@ -101,3 +101,22 @@ timeout 3 sing-box run -C base.d -c guard.json
 **Mechanism:** without `--dns`, docker and podman copy the host's `resolv.conf` into the container. A host running skvpn lists its own TUN's DNS there, and inside the container that address is the fixture's blocking TUN, so every lookup sinks into it
 
 **Safe route:** name the resolver on every run, `--dns 1.1.1.1`
+
+---
+
+## An Xray exit sends TLS to the SNI, not to the address
+
+**Where it bites:** a profile whose exit is an Xray inbound with `sniffing.destOverride` and without `routeOnly`. Any TLS whose SNI names another host than its address meets it, and Tor without bridges meets it first
+
+**Reproduction:** sing-box 1.14.1 with a VLESS profile up, and an Xray-core exit run by 3x-ui, version not recorded. Connect to a GitHub address with a foreign SNI and with an unknown one
+
+```sh
+openssl s_client -connect 140.82.121.4:443 -servername one.one.one.one </dev/null 2>/dev/null | openssl x509 -noout -subject
+openssl s_client -connect 140.82.121.4:443 -servername www.qz7vk3xptn2b.com </dev/null
+```
+
+**Misleading result:** the first command prints Cloudflare's certificate, not GitHub's. The second ends in EOF. Tor stops at `Bootstrapped 14%`, and the stall looks like Russian DPI, because the exit host itself reaches the relays. An address that the profile sends `direct` keeps its own certificate with any SNI, so the client is not the cause
+
+**Mechanism:** Xray reads the SNI from the ClientHello. Without `routeOnly`, it uses that name for routing and also as the new destination: it resolves the name on the exit and drops the client's address. Tor puts a random name like `www.<random>.com` into its TLS, and that name does not resolve. With `routeOnly: true`, the name steers routing only, and the connection goes to the client's address
+
+**Safe route:** give Tor bridges. obfs4 carries no TLS, and snowflake and webtunnel send real names. `routeOnly` stays off on purpose: a client with a poisoned local DNS sends a stub address with the real SNI, and the rewrite takes it to the real site. To check an exit, compare the certificate subject as above, and never read a stalled handshake as a block
