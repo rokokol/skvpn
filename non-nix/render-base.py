@@ -379,7 +379,9 @@ def tor_resolv():
     """The resolv.conf bound into Tor's unit. A transport resolves its broker through
     glibc otherwise, and the query reaches sing-box from systemd-resolved, which the
     `tor` profile's rule for Tor's user cannot match. sing-box serves DNS on the address
-    after the TUN's own"""
+    after the TUN's own. The remote DNS server follows as a fallback for a host with no
+    sing-box running; while one runs, the TUN takes those queries too, still as Tor's
+    user. The short timeout keeps a lookup without a TUN from a long wait"""
     tun4 = [
         address
         for address in map(ipaddress.ip_interface, inbound["address"])
@@ -387,7 +389,15 @@ def tor_resolv():
     ]
     if not tun4:
         parser.error("--tor needs an IPv4 --tun-address: Tor's resolver is the TUN's")
-    return f"nameserver {tun4[0].ip + 1}\n"
+    try:
+        ipaddress.ip_address(args.dns_server)
+    except ValueError:
+        parser.error("--tor needs --dns-server as an address: Tor's fallback resolver")
+    return (
+        f"nameserver {tun4[0].ip + 1}\n"
+        f"nameserver {args.dns_server}\n"
+        "options timeout:2\n"
+    )
 
 
 # Laid over the base the way nix/module.nix lays it: sing-box sorts every file by

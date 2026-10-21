@@ -236,15 +236,19 @@ let
     %include ${torBridges}
   '';
 
-  # Bound over Tor's /etc/resolv.conf: render-base.py's tor_resolv says why. sing-box serves
-  # DNS on the address after the TUN's IPv4 one
+  # Bound over Tor's /etc/resolv.conf: render-base.py's tor_resolv says why, and why a
+  # fallback follows. sing-box serves DNS on the address after the TUN's IPv4 one
   tun4 = lib.findFirst (address: !lib.hasInfix ":" address) null cfg.tun.address;
   torResolv =
     let
       octets = lib.splitString "." (lib.head (lib.splitString "/" tun4));
       next = lib.toInt (lib.last octets) + 1;
     in
-    "nameserver ${lib.concatStringsSep "." (lib.init octets ++ [ (toString next) ])}\n";
+    ''
+      nameserver ${lib.concatStringsSep "." (lib.init octets ++ [ (toString next) ])}
+      nameserver ${cfg.dns.remoteServer}
+      options timeout:2
+    '';
 
   # The Clash API file for `skvpn top`, written at every start by root. It cannot be an
   # etc entry: the secret would sit in the world-readable store. The secret lives in a
@@ -881,6 +885,11 @@ in
       {
         assertion = cfg.tor.enable -> tun4 != null;
         message = "services.skvpn.tor needs an IPv4 tun.address: Tor's resolver is the TUN's";
+      }
+      {
+        # IPv4 or IPv6, nothing a resolver would have to look up first
+        assertion = cfg.tor.enable -> builtins.match "[0-9.]+|[0-9a-fA-F:]+" cfg.dns.remoteServer != null;
+        message = "services.skvpn.tor needs dns.remoteServer as an address: Tor falls back to it plainly";
       }
     ];
 

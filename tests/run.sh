@@ -2228,7 +2228,7 @@ if [[ "$plugins" == "ClientTransportPlugin obfs4 exec $SKVPN_ROOT/plugins/obfs4p
   grep -qx 'ConditionPathExists=/var/lib/skvpn/tor-bridges.conf' "$unit" &&
   grep -qx 'BindReadOnlyPaths=/etc/sing-box/tor-resolv.conf:/etc/resolv.conf' "$unit" &&
   grep -qx 'Environment=GODEBUG=netdns=go' "$unit" &&
-  [[ "$(<"$(guard_stage sing-box/tor-resolv.conf)")" == "nameserver 172.19.0.2" ]] &&
+  grep -qx 'nameserver 172.19.0.2' "$(guard_stage sing-box/tor-resolv.conf)" &&
   grep -q '/tor-resolv\.conf$' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest" &&
   grep -qx "u $user - \"skvpn Tor\"" "$(guard_stage sysusers.d/skvpn-tor.conf)" &&
   grep -q 'skvpn-tor.service' "$SKVPN_ROOT/stage/usr/local/share/skvpn/install-manifest"; then
@@ -2527,14 +2527,22 @@ else
 fi
 
 # Tor's own lookups go to the address sing-box serves DNS on inside the TUN, the one after
-# the TUN's own, so they reach sing-box from Tor's user and not from systemd-resolved's
+# the TUN's own, so they reach sing-box from Tor's user and not from systemd-resolved's.
+# With no TUN at all they fall back, after a short wait, to the remote DNS server, which
+# then has to be an address
 world tor-resolver-is-the-tun-dns
 render=(python3 "$REPO/non-nix/render-base.py" --skip-path-check --tor --tor-plugin obfs4=/x --render tor-resolv)
-if [[ "$("${render[@]}")" == "nameserver 172.19.0.2" &&
-"$("${render[@]}" --tun-address fd00::1/126 --tun-address 10.7.0.1/30)" == "nameserver 10.7.0.2" ]]; then
+default=$("${render[@]}")
+custom=$("${render[@]}" --tun-address fd00::1/126 --tun-address 10.7.0.1/30 --dns-server 9.9.9.9)
+named=0
+"${render[@]}" --dns-server dns.quad9.net >/dev/null 2>&1 || named=$?
+if [[ "$(grep -m1 '^nameserver' <<<"$default")" == "nameserver 172.19.0.2" &&
+"$(grep '^nameserver' <<<"$custom")" == "nameserver 10.7.0.2"$'\n'"nameserver 9.9.9.9" &&
+"$(grep -c '^nameserver' <<<"$default")" == 2 && "$named" != 0 ]] &&
+  grep -qE '^options .*timeout:[1-3]( |$)' <<<"$default"; then
   ok
 else
-  fail "Tor's resolver is not the address after the TUN's IPv4 one"
+  fail "Tor's resolver is not the TUN's DNS then the remote server, waits long on a missing TUN, or took a name"
 fi
 
 world tor-bridges-update-asks-moat-for-the-base-country
