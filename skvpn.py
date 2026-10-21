@@ -2036,6 +2036,9 @@ def sfa_config(names, active, tailscale, tor=False):
     route_rules = [{"action": "sniff"}, {"protocol": "dns", "action": "hijack-dns"}]
     tor_policy = policy()["tor"]
     if tor:
+        # Orbot's own names, ahead of everything: through the selector they would wait on
+        # the `tor` exit, which is Orbot, and Orbot cannot reach a bridge without them
+        dns_rules.append({"package_name": [tor_policy["orbot"]["package"]], "action": "route", "server": "local"})
         dns_rules.append({"domain_suffix": [tor_policy["onion"]], "action": "route", "server": "onion"})
         route_rules += [
             # Orbot's own traffic, ahead of everything: through the `tor` exit it would

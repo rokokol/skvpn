@@ -2834,11 +2834,12 @@ if jq -e --slurpfile p "$REPO/policy.json" '$p[0].tor as $t |
     (.route.rules | any(.package_name == [$t.orbot.package] and .outbound == "direct")) and
     (.route.rules | any(.domain_suffix == [$t.onion] and .outbound == "tor")) and
     (.dns.servers | any(.type == "fakeip")) and
-    (.dns.rules | any(.domain_suffix == [$t.onion] and .server == "onion"))' <<<"$with" >/dev/null &&
+    (.dns.rules | any(.domain_suffix == [$t.onion] and .server == "onion")) and
+    .dns.rules[0] == {"package_name": [$t.orbot.package], "action": "route", "server": "local"}' <<<"$with" >/dev/null &&
   jq -e '(.outbounds | all(.tag != "tor")) and (.dns.servers | all(.type != "fakeip"))' <<<"$without" >/dev/null; then
   ok
 else
-  fail "export --sfa --tor did not reach Orbot for .onion and as an exit, or --tor leaked into the plain export"
+  fail "export --sfa --tor did not reach Orbot for .onion and as an exit, sent Orbot's names through the selector, or --tor leaked into the plain export"
 fi
 
 world export-sfa-tor-passes-the-real-sing-box
