@@ -18,7 +18,7 @@
 [![arch](https://github.com/rokokol/skvpn/actions/workflows/distro-arch.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-arch.yml)
 [![fedora](https://github.com/rokokol/skvpn/actions/workflows/distro-fedora.yml/badge.svg)](https://github.com/rokokol/skvpn/actions/workflows/distro-fedora.yml)
 
-<a href="https://github.com/rokokol/skvpn"><img src="https://count.owenewans.org/rokokol/skvpn?theme=rule34&notitle" alt="Stars, PRs, issues and commits of the skvpn repository" width="400"/></a>
+<a href="https://github.com/rokokol/skvpn"><img src="https://count.owenewans.org/rokokol/skvpn?theme=original-new&notitle" alt="Stars, PRs, issues and commits of the skvpn repository" width="400"/></a>
 
 </div>
 
