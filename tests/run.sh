@@ -2554,8 +2554,10 @@ world tor-unit-resolves-through-the-tun-dns
 unit="$(guard_stage systemd/system/skvpn-tor.service)"
 binds=$(sed -n 's/^BindReadOnlyPaths=//p' "$unit")
 hidden=$(sed -n 's/^InaccessiblePaths=//p' "$unit")
+# The inner bash is PID 1 of its own PID namespace: when it exits for any reason, the
+# kernel kills the DNS server with it
 # shellcheck disable=SC2016 # the inner bash expands its arguments, this one must not
-answer=$(unshare -rmn bash -c '
+answer=$(unshare -rmnp --kill-child bash -c '
   set -e
   ip link set lo up
   "$1" 127.0.0.2 "$2/queries" >"$2/dns.out" &
@@ -2570,7 +2572,10 @@ answer=$(unshare -rmn bash -c '
   "$6" -c "import socket; print(socket.getaddrinfo(\"probe.example.test\", 80, socket.AF_INET)[0][4][0])"
 ' _ "$HERE/fake-dns.py" "$SKVPN_ROOT" "$binds" "$SKVPN_ROOT/stage" "$hidden" \
   "$(readlink -f "$(command -v python3)")" 2>"$SKVPN_ROOT/ns.err") || true
-if [[ "$answer" == 10.9.9.9 ]] && grep -qx 'probe.example.test' "$SKVPN_ROOT/queries" &&
+leaked=$(pgrep -f "$SKVPN_ROOT/queries" || true)
+if [[ -n "$leaked" ]]; then
+  fail "the fake DNS server outlived its namespace: pid $leaked"
+elif [[ "$answer" == 10.9.9.9 ]] && grep -qx 'probe.example.test' "$SKVPN_ROOT/queries" &&
   ! grep -q GODEBUG "$unit"; then
   ok
 else
