@@ -54,7 +54,7 @@ declare -A TOR_FLAGS=(
 declare -A BOOTSTRAP=(
   [debian]='apt-get update -qq && apt-get install -y -qq systemd'
   [ubuntu]='apt-get update -qq && apt-get install -y -qq systemd'
-  [arch]='pacman -Sy --noconfirm'
+  [arch]='pacman -Syu --noconfirm'
   [fedora]='dnf install -y -q systemd'
 )
 
